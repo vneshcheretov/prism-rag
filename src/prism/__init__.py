@@ -1,6 +1,7 @@
 """Prism — keypoint-decomposition RAG engine over a Qdrant-backed knowledge graph."""
 
 from .core import (
+    AnswerResult,
     Chunk,
     MarkdownChunker,
     NodeBlueprint,
@@ -16,6 +17,7 @@ from .storage import QdrantBackend
 __version__ = "0.1.0"
 
 __all__ = [
+    "AnswerResult",
     "Chunk",
     "Embedder",
     "LLMClient",
