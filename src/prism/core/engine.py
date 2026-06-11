@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ..embeddings.sonar import resolve_flores_code
-from ..llm.client import LLMClient
+from ..llm.base import LLMProvider
 from ..llm.prompts import RELEVANCE_FILTER_PROMPT, build_prompts
 from ..schemas.llm_outputs import (
     CorpusSummary,
@@ -93,7 +93,7 @@ class Prism:
     def __init__(
         self,
         graph: PrismGraph,
-        llm: LLMClient,
+        llm: LLMProvider,
         chunker: MarkdownChunker | None = None,
         *,
         language: str | None = None,
@@ -263,6 +263,8 @@ class Prism:
         if not q:
             return SearchResult(query=query, note=_EMPTY_QUERY)
 
+        log.info("search: query=%r", q)
+
         mismatch = self._language_mismatch_message(query_language)
         if mismatch:
             return SearchResult(query=query, note=mismatch)
@@ -274,6 +276,7 @@ class Prism:
             return SearchResult(query=query, note=f"keypoint extraction error: {e}")
 
         if not kp.is_searchable:
+            log.info("search: non-searchable input, skipping retrieval")
             return SearchResult(query=query, note=_NON_SEARCHABLE)
 
         keypoints = list(
@@ -284,13 +287,20 @@ class Prism:
         if not keypoints:
             return SearchResult(query=query, note=_NO_KEYPOINTS)
 
-        log.debug("search: keypoints=%s", keypoints)
+        log.info("search: keypoints=%s", keypoints)
 
         nodes = await self._hybrid_retrieve(keypoints)
         paragraphs = self.graph.collect_paragraphs(nodes)
+        log.info(
+            "search: reconstructed %d paragraphs from %d nodes",
+            len(paragraphs),
+            len(nodes),
+        )
 
         if filter_relevance and paragraphs:
+            before = len(paragraphs)
             paragraphs = await self._filter_paragraphs(query, paragraphs)
+            log.info("search: relevance filter kept %d/%d paragraphs", len(paragraphs), before)
 
         return SearchResult(
             query=query,
@@ -380,16 +390,23 @@ class Prism:
 
     async def _hybrid_retrieve(self, keypoints: list[str]) -> list[PrismNode]:
         vec_nodes, query_vectors = await self.graph.vector_search(keypoints)
-        vec_nodes = await self.graph.expand_neighbors(vec_nodes, query_vectors)
+        expanded = await self.graph.expand_neighbors(vec_nodes, query_vectors)
         lex_nodes = await self.graph.lexical_search(keypoints)
 
         seen: set[int] = set()
         combined: list[PrismNode] = []
-        for n in (*vec_nodes, *lex_nodes):
+        for n in (*expanded, *lex_nodes):
             if n.index in seen:
                 continue
             seen.add(n.index)
             combined.append(n)
+        log.info(
+            "search: hybrid retrieval -> %d unique nodes (vector=%d, +neighbors=%d, lexical=%d)",
+            len(combined),
+            len(vec_nodes),
+            len(expanded) - len(vec_nodes),
+            len(lex_nodes),
+        )
         return combined
 
     async def _filter_paragraphs(self, query: str, paragraphs: list[str]) -> list[str]:
@@ -411,6 +428,11 @@ class Prism:
                 )
                 return None
 
+            log.debug(
+                "relevance filter: is_correct=%s paragraph=%.80r",
+                result.is_correct,
+                paragraph,
+            )
             if not result.is_correct:
                 return None
             excerpt = result.answer.strip()

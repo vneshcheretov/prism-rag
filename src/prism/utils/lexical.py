@@ -45,7 +45,7 @@ from ..schemas.llm_outputs import LLMStems
 from .text import sentence_tokenize
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..llm.client import LLMClient
+    from ..llm.base import LLMProvider
 
 log = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ Output strictly as JSON of the form: {"stems": ["...", "..."]}
 
 async def _llm_stem_words(
     words: list[str],
-    llm: LLMClient,
+    llm: LLMProvider,
     language_name: str,
 ) -> list[str]:
     """Ask the LLM to stem a list of words. Falls back to identity on failure.
@@ -247,7 +247,7 @@ async def _llm_stem_words(
 
 async def chunk_lexical_payload_llm(
     text: str,
-    llm: LLMClient,
+    llm: LLMProvider,
     language_name: str,
 ) -> dict[str, list[str] | list[list[str]]]:
     """LLM-backed version of :func:`chunk_lexical_payload`.
@@ -290,7 +290,7 @@ async def chunk_lexical_payload_llm(
 
 async def keypoint_stems_llm(
     text: str,
-    llm: LLMClient,
+    llm: LLMProvider,
     language_name: str,
 ) -> list[str]:
     """LLM-backed version of :func:`keypoint_stems` for a single query."""

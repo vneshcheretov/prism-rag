@@ -8,7 +8,7 @@ import numpy as np
 from qdrant_client.http.models import PointStruct
 
 from ..embeddings import Embedder
-from ..llm.client import LLMClient
+from ..llm.base import LLMProvider
 from ..storage.qdrant import QdrantBackend
 from ..utils.lexical import (
     ISO_TO_SNOWBALL,
@@ -69,6 +69,19 @@ class PrismGraph:
         self.qdrant = qdrant
         self.embedder = embedder
 
+        # The embedder is the single source of truth for dimensionality.
+        # An unset backend inherits embedder.dim; an explicitly set one
+        # must match it — anything else fails on the first upsert with an
+        # opaque Qdrant error, so we fail fast here instead.
+        if qdrant.vector_size is None:
+            qdrant.vector_size = embedder.dim
+        elif qdrant.vector_size != embedder.dim:
+            raise ValueError(
+                f"embedding dimension mismatch: QdrantBackend(vector_size="
+                f"{qdrant.vector_size}) vs embedder.dim={embedder.dim}. "
+                "Omit vector_size to derive it from the embedder."
+            )
+
         self.retrieval_percentile = retrieval_percentile
         self.neighbor_top_k = neighbor_top_k
         self.neighbor_threshold = neighbor_threshold
@@ -79,7 +92,7 @@ class PrismGraph:
         self.lang_iso: str | None = None
         # LLM-backed stemmer for languages outside Snowball. ``None`` means
         # the sync Snowball/identity path is used. Set via ``set_language``.
-        self._stem_llm: LLMClient | None = None
+        self._stem_llm: LLMProvider | None = None
         self._stem_language_name: str | None = None
 
         self.nodes: dict[int, PrismNode] = {}
@@ -92,7 +105,7 @@ class PrismGraph:
         self,
         iso: str | None,
         *,
-        llm: LLMClient | None = None,
+        llm: LLMProvider | None = None,
         language_name: str | None = None,
     ) -> None:
         """Set the ISO 639-1 code used by the lexical pipeline.
@@ -204,9 +217,10 @@ class PrismGraph:
         Qdrant requires every point to carry the named vector; the anchor
         is never returned by dense search (cosine to zero is undefined and
         Qdrant filters it out) so the value does not matter — but the
-        shape must match the collection's vector size.
+        shape must match the collection's vector size, which __init__
+        guarantees to equal ``embedder.dim``.
         """
-        return [self.LEXICAL_ANCHOR_VECTOR_VALUE] * self.qdrant.vector_size
+        return [self.LEXICAL_ANCHOR_VECTOR_VALUE] * self.embedder.dim
 
     async def _upsert_to_qdrant(
         self,
@@ -346,6 +360,11 @@ class PrismGraph:
                     node_ids.add(hit.node_id)
 
         nodes = [self.nodes[nid] for nid in node_ids]
+        log.info(
+            "vector search: %d nodes: %s",
+            len(nodes),
+            [(n.index, n.name) for n in nodes],
+        )
         return nodes, query_vectors
 
     def _percentile_filter(
@@ -403,6 +422,11 @@ class PrismGraph:
                     continue
                 seen.add(nid)
                 nodes.append(self.nodes[nid])
+        log.info(
+            "lexical search: %d nodes: %s",
+            len(nodes),
+            [(n.index, n.name) for n in nodes],
+        )
         return nodes
 
     async def expand_neighbors(
@@ -438,6 +462,12 @@ class PrismGraph:
                         extra[neighbor_id] = neighbor
                         break
 
+        if extra:
+            log.info(
+                "neighbor expansion: +%d nodes: %s",
+                len(extra),
+                [(n.index, n.name) for n in extra.values()],
+            )
         return list(base.values()) + list(extra.values())
 
     def collect_paragraphs(self, nodes: list[PrismNode]) -> list[str]:

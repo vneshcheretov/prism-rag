@@ -11,7 +11,7 @@ from .core import (
     SearchResult,
 )
 from .embeddings import Embedder, SonarEmbedder
-from .llm import LLMClient
+from .llm import LLMClient, LLMProvider
 from .storage import QdrantBackend
 
 __version__ = "0.1.0"
@@ -21,6 +21,7 @@ __all__ = [
     "Chunk",
     "Embedder",
     "LLMClient",
+    "LLMProvider",
     "MarkdownChunker",
     "NodeBlueprint",
     "Prism",

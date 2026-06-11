@@ -117,13 +117,13 @@ class SonarEmbedder(Embedder):
             ) from e
 
         self._resolved_device = self._resolve_device()
-        log.info("Loading SONAR %s on %s ...", self.ENCODER_NAME, self._resolved_device)
+        log.debug("Loading SONAR %s on %s ...", self.ENCODER_NAME, self._resolved_device)
         self._pipeline = TextToEmbeddingModelPipeline(
             encoder=self.ENCODER_NAME,
             tokenizer=self.ENCODER_NAME,
             device=torch.device(self._resolved_device),
         )
-        log.info("SONAR loaded.")
+        log.debug("SONAR loaded.")
 
     def _embed_sync(self, texts: list[str], source_lang: str) -> np.ndarray:
         self._load()

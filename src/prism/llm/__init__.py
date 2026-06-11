@@ -1,3 +1,4 @@
-from .client import LLMClient, Tier
+from .base import LLMProvider, Tier
+from .client import LLMClient
 
-__all__ = ["LLMClient", "Tier"]
+__all__ = ["LLMClient", "LLMProvider", "Tier"]

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from langdetect import DetectorFactory, LangDetectException, detect_langs
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..llm.client import LLMClient
+    from ..llm.base import LLMProvider
 
 # Make langdetect deterministic across runs — by default it seeds its
 # internal RNG from the system, which produces different results on the
@@ -43,7 +43,7 @@ _LLM_PROMPT = (
 async def detect_language(
     text: str,
     *,
-    llm: LLMClient | None = None,
+    llm: LLMProvider | None = None,
     threshold: float = 0.90,
     fallback: str = "en",
     sample_chars: int = 2000,
