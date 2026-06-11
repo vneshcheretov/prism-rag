@@ -14,6 +14,44 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 
+# Common ISO 639-1 codes → FLORES-200 codes that SONAR expects.
+# Covers the ~12 languages most users will reach for; anything not here is
+# passed through as-is so power users can still use raw FLORES codes.
+ISO_TO_FLORES: dict[str, str] = {
+    "ru": "rus_Cyrl",
+    "en": "eng_Latn",
+    "es": "spa_Latn",
+    "ja": "jpn_Jpan",
+    "kk": "kaz_Cyrl",
+    "de": "deu_Latn",
+    "fr": "fra_Latn",
+    "it": "ita_Latn",
+    "pt": "por_Latn",
+    "zh": "zho_Hans",
+    "ar": "arb_Arab",
+    "tr": "tur_Latn",
+    "uk": "ukr_Cyrl",
+    "pl": "pol_Latn",
+    "nl": "nld_Latn",
+}
+
+
+def resolve_flores_code(lang: str) -> str:
+    """Resolve a short ISO code (``"ru"``) to a FLORES-200 code (``"rus_Cyrl"``).
+
+    A code already in FLORES form (``"<lang>_<script>"``) is returned unchanged.
+    An unknown short code is also returned unchanged with a warning — SONAR
+    will raise a clearer error than this helper could.
+    """
+    if "_" in lang:
+        return lang
+    key = lang.lower()
+    if key in ISO_TO_FLORES:
+        return ISO_TO_FLORES[key]
+    log.warning("unknown language code %r; passing through to SONAR as-is", lang)
+    return lang
+
+
 class SonarEmbedder(Embedder):
     """Meta SONAR text embedder.
 
@@ -41,7 +79,7 @@ class SonarEmbedder(Embedder):
         device: str | None = None,
         batch_size: int = 32,
     ) -> None:
-        self.source_lang = source_lang
+        self.source_lang = resolve_flores_code(source_lang)
         self._device_override = device
         self.batch_size = batch_size
         self._pipeline: TextToEmbeddingModelPipeline | None = None
@@ -79,13 +117,13 @@ class SonarEmbedder(Embedder):
             ) from e
 
         self._resolved_device = self._resolve_device()
-        log.info("Loading SONAR %s on %s ...", self.ENCODER_NAME, self._resolved_device)
+        log.debug("Loading SONAR %s on %s ...", self.ENCODER_NAME, self._resolved_device)
         self._pipeline = TextToEmbeddingModelPipeline(
             encoder=self.ENCODER_NAME,
             tokenizer=self.ENCODER_NAME,
             device=torch.device(self._resolved_device),
         )
-        log.info("SONAR loaded.")
+        log.debug("SONAR loaded.")
 
     def _embed_sync(self, texts: list[str], source_lang: str) -> np.ndarray:
         self._load()
@@ -110,5 +148,5 @@ class SonarEmbedder(Embedder):
         if not texts:
             return np.zeros((0, self.EMBED_DIM), dtype=np.float32)
 
-        lang = source_lang or self.source_lang
+        lang = resolve_flores_code(source_lang) if source_lang else self.source_lang
         return await asyncio.to_thread(self._embed_sync, texts, lang)

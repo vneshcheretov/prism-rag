@@ -1,4 +1,4 @@
 from .base import Embedder
-from .sonar import SonarEmbedder
+from .sonar import ISO_TO_FLORES, SonarEmbedder, resolve_flores_code
 
-__all__ = ["Embedder", "SonarEmbedder"]
+__all__ = ["ISO_TO_FLORES", "Embedder", "SonarEmbedder", "resolve_flores_code"]

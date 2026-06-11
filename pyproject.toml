@@ -34,9 +34,15 @@ dependencies = [
     "python-dotenv>=1.0",
     "aiohttp>=3.9",
     "tenacity>=8.2",
+    "langdetect>=1.0.9",
 ]
 
 [project.optional-dependencies]
+# fairseq2 needs the libsndfile C library, which pip cannot install:
+#   conda:  conda install -c conda-forge libsndfile
+#   debian: apt install libsndfile1
+# In conda envs fairseq2 only looks inside $CONDA_PREFIX/lib, so the
+# system copy is not enough — install it into the env itself.
 sonar = [
     "sonar-space>=0.2",
     "fairseq2>=0.3",
@@ -67,6 +73,10 @@ ignore = ["E501", "RUF001", "RUF002"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: loads real models or hits external services; run with `pytest -m integration`",
+]
+addopts = "-m 'not integration'"
 
 [tool.mypy]
 python_version = "3.11"

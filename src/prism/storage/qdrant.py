@@ -71,7 +71,6 @@ class QdrantBackend:
 
     DEFAULT_HNSW_CONFIG = HnswConfigDiff(m=256, ef_construct=512)
     DEFAULT_SEARCH_EF = 1024
-    DEFAULT_VECTOR_SIZE = 1024
     DEFAULT_BATCH_SIZE = 300
     DEFAULT_BATCH_CONCURRENCY = 3
 
@@ -80,11 +79,16 @@ class QdrantBackend:
         client: AsyncQdrantClient,
         collection_name: str,
         *,
-        vector_size: int = DEFAULT_VECTOR_SIZE,
+        vector_size: int | None = None,
         distance: Distance = Distance.COSINE,
         hnsw_config: HnswConfigDiff | None = None,
         hnsw_ef: int = DEFAULT_SEARCH_EF,
     ) -> None:
+        # ``vector_size`` may be left as None: PrismGraph fills it in from
+        # ``embedder.dim``, which keeps the embedder the single source of
+        # truth for dimensionality. Set it explicitly only when using the
+        # backend standalone; PrismGraph will then verify it matches the
+        # embedder.
         self.client = client
         self.collection_name = collection_name
         self.vector_size = vector_size
@@ -93,11 +97,19 @@ class QdrantBackend:
         self.hnsw_ef = hnsw_ef
 
     async def ensure_collection(self, recreate: bool = False) -> None:
+        if self.vector_size is None:
+            raise ValueError(
+                "QdrantBackend.vector_size is not set. Pass vector_size=... "
+                "explicitly or create the graph via PrismGraph(qdrant, embedder), "
+                "which propagates embedder.dim."
+            )
         exists = await self.client.collection_exists(self.collection_name)
         if exists and recreate:
             await self.client.delete_collection(self.collection_name)
             exists = False
-        if not exists:
+        if exists:
+            await self._check_existing_dim()
+        else:
             await self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
@@ -112,6 +124,20 @@ class QdrantBackend:
                 self.distance,
             )
         await self._ensure_payload_indexes()
+
+    async def _check_existing_dim(self) -> None:
+        """Fail fast when reusing a collection built for another embedder."""
+        info = await self.client.get_collection(self.collection_name)
+        params = info.config.params.vectors
+        existing = params.size if isinstance(params, VectorParams) else None
+        if existing is not None and existing != self.vector_size:
+            raise ValueError(
+                f"collection {self.collection_name!r} already exists with "
+                f"dim={existing}, but the configured embedding dim is "
+                f"{self.vector_size}. Changing the embedder requires "
+                "reindexing — recreate the collection (recreate=True) or "
+                "use a different collection_name."
+            )
 
     async def _ensure_payload_indexes(self) -> None:
         """Create keyword indexes on lexical payload fields.

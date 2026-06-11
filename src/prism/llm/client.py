@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Literal, TypeVar
+from typing import TypeVar
 
 import openai
 from openai import AsyncOpenAI
@@ -14,10 +14,11 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from .base import Tier
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-Tier = Literal["fast", "strong"]
 
 _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     openai.APIConnectionError,

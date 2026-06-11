@@ -1,0 +1,12 @@
+feat: pluggable contracts, search observability, demo & README overhaul
+
+- llm: LLMProvider protocol — any client can drive the pipeline
+- graph: embedder.dim is the source of truth for vector size, fail fast on mismatch
+- prompts: answer the question directly; prompt-injection guards at LLM boundaries
+- logging: INFO trace of every retrieval stage (keypoints, hits, filter verdicts)
+- tests: SONAR integration suite (-m integration) + dim contract tests
+- demo: examples/ -> demo/, now tracked, with folder README
+- README: rewrite with quickstart, demo transcript, BYO embedder/LLM
+- pyproject: document libsndfile dependency (sonar extra)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

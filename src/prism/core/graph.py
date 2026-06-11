@@ -8,10 +8,14 @@ import numpy as np
 from qdrant_client.http.models import PointStruct
 
 from ..embeddings import Embedder
+from ..llm.base import LLMProvider
 from ..storage.qdrant import QdrantBackend
 from ..utils.lexical import (
+    ISO_TO_SNOWBALL,
     chunk_lexical_payload,
+    chunk_lexical_payload_llm,
     keypoint_stems,
+    keypoint_stems_llm,
     sentence_contains_all,
 )
 from .node import NodeBlueprint, PrismNode
@@ -65,16 +69,64 @@ class PrismGraph:
         self.qdrant = qdrant
         self.embedder = embedder
 
+        # The embedder is the single source of truth for dimensionality.
+        # An unset backend inherits embedder.dim; an explicitly set one
+        # must match it — anything else fails on the first upsert with an
+        # opaque Qdrant error, so we fail fast here instead.
+        if qdrant.vector_size is None:
+            qdrant.vector_size = embedder.dim
+        elif qdrant.vector_size != embedder.dim:
+            raise ValueError(
+                f"embedding dimension mismatch: QdrantBackend(vector_size="
+                f"{qdrant.vector_size}) vs embedder.dim={embedder.dim}. "
+                "Omit vector_size to derive it from the embedder."
+            )
+
         self.retrieval_percentile = retrieval_percentile
         self.neighbor_top_k = neighbor_top_k
         self.neighbor_threshold = neighbor_threshold
         self.expand_threshold = expand_threshold
+
+        # ISO 639-1 code used by the lexical pipeline (Snowball stemmer
+        # selection). ``None`` means identity-stem — see ``lexical.py``.
+        self.lang_iso: str | None = None
+        # LLM-backed stemmer for languages outside Snowball. ``None`` means
+        # the sync Snowball/identity path is used. Set via ``set_language``.
+        self._stem_llm: LLMProvider | None = None
+        self._stem_language_name: str | None = None
 
         self.nodes: dict[int, PrismNode] = {}
         self._paragraph_to_nodes: dict[str, list[int]] = defaultdict(list)
         self._next_node_id = 1
         self._next_point_id = 1
         self._ingest_lock = asyncio.Lock()
+
+    def set_language(
+        self,
+        iso: str | None,
+        *,
+        llm: LLMProvider | None = None,
+        language_name: str | None = None,
+    ) -> None:
+        """Set the ISO 639-1 code used by the lexical pipeline.
+
+        Affects future ``add_nodes`` and ``lexical_search`` calls. Already
+        indexed payloads keep whatever stems they were built with — callers
+        that mix languages in one collection must reindex.
+
+        If ``llm`` is provided together with ``language_name`` (English),
+        the LLM is used as the stemmer for any language outside Snowball.
+        For Snowball-supported languages the LLM is ignored — the local
+        algorithm is always cheaper and more deterministic.
+        """
+        self.lang_iso = iso
+        if llm is not None and language_name and iso and iso not in ISO_TO_SNOWBALL:
+            self._stem_llm = llm
+            self._stem_language_name = language_name
+            log.info("PrismGraph: lexical stemmer = LLM (%s)", language_name)
+        else:
+            self._stem_llm = None
+            self._stem_language_name = None
 
     @classmethod
     async def create(
@@ -145,15 +197,30 @@ class PrismGraph:
             nodes.append(node)
         return nodes
 
+    async def _build_lexical_payload(self, text: str) -> dict[str, list[str] | list[list[str]]]:
+        """Dispatch to the LLM stemmer when wired in, else the sync path."""
+        if self._stem_llm is not None and self._stem_language_name is not None:
+            return await chunk_lexical_payload_llm(
+                text, self._stem_llm, self._stem_language_name
+            )
+        return chunk_lexical_payload(text, self.lang_iso)
+
+    async def _stem_query_keypoint(self, q: str) -> list[str]:
+        """Dispatch to the LLM stemmer when wired in, else the sync path."""
+        if self._stem_llm is not None and self._stem_language_name is not None:
+            return await keypoint_stems_llm(q, self._stem_llm, self._stem_language_name)
+        return keypoint_stems(q, self.lang_iso)
+
     def _lexical_anchor_vector(self) -> list[float]:
         """Zero vector used as a placeholder for the lexical anchor point.
 
         Qdrant requires every point to carry the named vector; the anchor
         is never returned by dense search (cosine to zero is undefined and
         Qdrant filters it out) so the value does not matter — but the
-        shape must match the collection's vector size.
+        shape must match the collection's vector size, which __init__
+        guarantees to equal ``embedder.dim``.
         """
-        return [self.LEXICAL_ANCHOR_VECTOR_VALUE] * self.qdrant.vector_size
+        return [self.LEXICAL_ANCHOR_VECTOR_VALUE] * self.embedder.dim
 
     async def _upsert_to_qdrant(
         self,
@@ -161,14 +228,20 @@ class PrismGraph:
         keypoint_vectors: np.ndarray,
         counts: list[int],
     ) -> None:
+        # Build lexical payloads up front and (when the LLM stemmer is
+        # active) in parallel — one network call per node otherwise serialises
+        # the whole ingest.
+        lex_payloads = await asyncio.gather(
+            *(self._build_lexical_payload(n.text) for n in nodes)
+        )
+
         points: list[PointStruct] = []
         offset = 0
-        for node, count in zip(nodes, counts, strict=True):
+        for node, count, lex in zip(nodes, counts, lex_payloads, strict=True):
             node_vecs = keypoint_vectors[offset : offset + count]
             offset += count
 
             # Lexical anchor: only point carrying stems + sentence_stems.
-            lex = chunk_lexical_payload(node.text)
             points.append(
                 PointStruct(
                     id=self._next_point_id,
@@ -287,6 +360,11 @@ class PrismGraph:
                     node_ids.add(hit.node_id)
 
         nodes = [self.nodes[nid] for nid in node_ids]
+        log.info(
+            "vector search: %d nodes: %s",
+            len(nodes),
+            [(n.index, n.name) for n in nodes],
+        )
         return nodes, query_vectors
 
     def _percentile_filter(
@@ -323,7 +401,7 @@ class PrismGraph:
             return []
 
         async def _one(q: str) -> list[int]:
-            stems = keypoint_stems(q)
+            stems = await self._stem_query_keypoint(q)
             if not stems:
                 return []
             cands = await self.qdrant.lexical_scroll(
@@ -344,6 +422,11 @@ class PrismGraph:
                     continue
                 seen.add(nid)
                 nodes.append(self.nodes[nid])
+        log.info(
+            "lexical search: %d nodes: %s",
+            len(nodes),
+            [(n.index, n.name) for n in nodes],
+        )
         return nodes
 
     async def expand_neighbors(
@@ -379,6 +462,12 @@ class PrismGraph:
                         extra[neighbor_id] = neighbor
                         break
 
+        if extra:
+            log.info(
+                "neighbor expansion: +%d nodes: %s",
+                len(extra),
+                [(n.index, n.name) for n in extra.values()],
+            )
         return list(base.values()) + list(extra.values())
 
     def collect_paragraphs(self, nodes: list[PrismNode]) -> list[str]:
