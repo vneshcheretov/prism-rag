@@ -2,7 +2,9 @@
 
 from .core import (
     AnswerResult,
+    ChatSession,
     Chunk,
+    History,
     MarkdownChunker,
     NodeBlueprint,
     Prism,
@@ -18,8 +20,10 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AnswerResult",
+    "ChatSession",
     "Chunk",
     "Embedder",
+    "History",
     "LLMClient",
     "LLMProvider",
     "MarkdownChunker",

@@ -19,10 +19,10 @@ from pydantic import BaseModel
 Tier = Literal["fast", "strong"]
 """Intent-level model selector.
 
-``fast`` is used for high-volume calls (per-chunk extraction, query
-decomposition, relevance filtering); ``strong`` for one-off heavy calls
-(corpus summary, answer synthesis). Implementations may map both tiers to
-the same model.
+``fast`` is used for high-volume extraction calls (per-chunk extraction,
+query decomposition); ``strong`` for judgement and synthesis (relevance
+filtering, corpus summary, answer synthesis). Implementations may map both
+tiers to the same model.
 """
 
 T = TypeVar("T", bound=BaseModel)

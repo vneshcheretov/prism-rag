@@ -181,6 +181,36 @@ ans.search         # underlying SearchResult for citations
 ans.note           # why the answer is empty, when it is (see below)
 ```
 
+### Follow-up questions
+
+Prism stays stateless — the caller owns the conversation. Pass the recent turns and the
+query analysis resolves follow-up references ("what about a cat?") during decomposition:
+
+History uses the familiar OpenAI chat-message format, so you can pass your existing
+chat log as-is (non-dialogue roles are ignored):
+
+```python
+ans = await prism.answer("can I bring a dog?")
+follow_up = await prism.answer(
+    "what about a cat?",
+    history=[
+        {"role": "user", "content": "can I bring a dog?"},
+        {"role": "assistant", "content": ans.answer},
+    ],
+)
+```
+
+Don't want to manage the log yourself? `ChatSession` does it for one conversation
+(one session per dialogue; sessions share the engine freely):
+
+```python
+from prism import ChatSession
+
+session = ChatSession(prism)
+await session.ask("can I bring a dog?")
+await session.ask("what about a cat?")   # resolved against the history
+```
+
 ### Graceful degradation, not exceptions
 
 The pipeline short-circuits cheaply and explains itself via `note`:
@@ -248,11 +278,15 @@ llm = LLMClient(
 `prism.LLMProvider` protocol (structural typing — no inheritance required):
 
 ```python
+from typing import TypeVar
+
 from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class MyLLM:
-    async def complete_structured[T: BaseModel](
+    async def complete_structured(
         self, system: str, user: str, schema: type[T], *, tier: str = "fast"
     ) -> T:
         """MUST return a validated instance of `schema` (or raise)."""
@@ -265,9 +299,10 @@ class MyLLM:
         ...
 ```
 
-`tier` declares intent: `fast` = high-volume calls (extraction, query analysis, filtering),
-`strong` = heavy one-offs (summaries, answers); mapping both to one model is fine. Retries
-are your responsibility — the pipeline treats every call as a single attempt.
+`tier` declares intent: `fast` = high-volume extraction (chunk keypoints, query analysis),
+`strong` = judgement and synthesis (relevance filter, summaries, answers); mapping both to
+one model is fine. Retries are your responsibility — the pipeline treats every call as a
+single attempt.
 
 ### Configuration
 
@@ -277,8 +312,8 @@ All knobs work via constructor arguments or environment variables:
 |---|---|---|
 | `OPENAI_API_KEY` | — | OpenAI auth (required) |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `PRISM_LLM_FAST_MODEL` | `gpt-4o-mini` | High-volume calls: extraction, filtering |
-| `PRISM_LLM_STRONG_MODEL` | `gpt-4o` | Heavy calls: summarization, answers |
+| `PRISM_LLM_FAST_MODEL` | `gpt-5.4-nano` | High-volume extraction: chunk keypoints, query analysis |
+| `PRISM_LLM_STRONG_MODEL` | `gpt-5.4-mini` | Judgement & synthesis: relevance filter, summaries, answers |
 | `PRISM_SONAR_DEVICE` | auto (`cuda` if available) | Force `cpu` / `cuda` for SONAR |
 
 ## Project layout

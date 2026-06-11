@@ -34,10 +34,15 @@ class LLMClient:
     Exposes two model tiers so that the rest of the codebase declares
     *intent* (``fast`` vs ``strong``) rather than hard-coding model names:
 
-    - ``fast`` — high-volume calls: keypoint extraction, result filtration,
-      per-chunk node generation. Defaults to ``gpt-4o-mini``.
-    - ``strong`` — one-off heavy reasoning: corpus-wide summarization,
-      judge-style evaluation. Defaults to ``gpt-4o``.
+    - ``fast`` — high-volume extraction calls: query/chunk keypoint
+      extraction, per-chunk node generation. Defaults to ``gpt-5.4-nano``.
+    - ``strong`` — judgement and synthesis: relevance filtering,
+      corpus-wide summarization, answer synthesis. Defaults to
+      ``gpt-5.4-mini``.
+
+    ``temperature`` defaults to ``None`` (omit the parameter) because the
+    GPT-5 model family rejects explicit temperature values; pass a float
+    only when targeting models that still accept it.
 
     All calls retry on transient errors (rate limits, timeouts, 5xx,
     connection drops) with random-exponential backoff. 4xx errors are
@@ -50,13 +55,13 @@ class LLMClient:
         api_key: str | None = None,
         fast_model: str | None = None,
         strong_model: str | None = None,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         max_retries: int = 5,
         timeout: float = 60.0,
         client: AsyncOpenAI | None = None,
     ) -> None:
-        self.fast_model = fast_model or os.getenv("PRISM_LLM_FAST_MODEL", "gpt-4o-mini")
-        self.strong_model = strong_model or os.getenv("PRISM_LLM_STRONG_MODEL", "gpt-4o")
+        self.fast_model = fast_model or os.getenv("PRISM_LLM_FAST_MODEL", "gpt-5.4-nano")
+        self.strong_model = strong_model or os.getenv("PRISM_LLM_STRONG_MODEL", "gpt-5.4-mini")
         self.temperature = temperature
         self.max_retries = max_retries
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from ..embeddings.sonar import resolve_flores_code
@@ -20,6 +21,11 @@ from .graph import PrismGraph
 from .node import NodeBlueprint, PrismNode
 
 log = logging.getLogger(__name__)
+
+# OpenAI-style chat messages: {"role": "user" | "assistant", "content": "..."}.
+History = Sequence[Mapping[str, str]]
+
+_HISTORY_MAX_MESSAGES = 12
 
 _EMPTY_QUERY = "empty query"
 _NON_SEARCHABLE = "query is not an information request"
@@ -252,13 +258,48 @@ class Prism:
             return None
         return format_mismatch_message(query_language, self.language)
 
+    @staticmethod
+    def _format_history(history: History | None) -> str:
+        """Render recent dialogue messages for inclusion in LLM user messages.
+
+        ``history`` is a sequence of OpenAI-style chat messages
+        (``{"role": "user" | "assistant", "content": "..."}``), oldest
+        first — so callers can pass their existing chat log as-is. The
+        engine itself stays stateless: the caller owns the conversation.
+
+        Only the last few messages are kept to bound tokens; messages with
+        other roles (``system``, ``tool``) or empty content are skipped.
+        Returns ``""`` when there is nothing to show.
+        """
+        if not history:
+            return ""
+        lines: list[str] = []
+        for message in list(history)[-_HISTORY_MAX_MESSAGES:]:
+            role = str(message.get("role", "")).strip().lower()
+            content = str(message.get("content", "")).strip()
+            if role not in ("user", "assistant") or not content:
+                continue
+            lines.append(f"{role.capitalize()}: {content}")
+        if not lines:
+            return ""
+        return "DIALOGUE HISTORY (oldest first):\n" + "\n".join(lines)
+
     async def search(
         self,
         query: str,
         *,
         filter_relevance: bool = True,
         query_language: str | None = None,
+        history: History | None = None,
     ) -> SearchResult:
+        """Retrieve relevant paragraphs for a natural-language query.
+
+        ``history`` enables follow-up questions: pass the recent chat
+        messages in OpenAI format (``{"role": "user" | "assistant",
+        "content": ...}``) and the query decomposition resolves
+        pronouns/ellipsis against them ("а с кошкой?" after a question
+        about dogs). Retrieval itself stays stateless.
+        """
         q = query.strip() if query else ""
         if not q:
             return SearchResult(query=query, note=_EMPTY_QUERY)
@@ -270,7 +311,7 @@ class Prism:
             return SearchResult(query=query, note=mismatch)
 
         try:
-            kp = await self._extract_query_keypoints(q)
+            kp = await self._extract_query_keypoints(q, history)
         except Exception as e:
             log.error("search: keypoint extraction failed: %s: %s", type(e).__name__, e)
             return SearchResult(query=query, note=f"keypoint extraction error: {e}")
@@ -299,7 +340,7 @@ class Prism:
 
         if filter_relevance and paragraphs:
             before = len(paragraphs)
-            paragraphs = await self._filter_paragraphs(query, paragraphs)
+            paragraphs = await self._filter_paragraphs(query, paragraphs, history)
             log.info("search: relevance filter kept %d/%d paragraphs", len(paragraphs), before)
 
         return SearchResult(
@@ -315,6 +356,7 @@ class Prism:
         *,
         filter_relevance: bool = True,
         query_language: str | None = None,
+        history: History | None = None,
     ) -> AnswerResult:
         """End-to-end: retrieve relevant fragments and synthesize an answer.
 
@@ -344,6 +386,7 @@ class Prism:
             query,
             filter_relevance=filter_relevance,
             query_language=query_language,
+            history=history,
         )
 
         if not search.paragraphs:
@@ -354,7 +397,9 @@ class Prism:
             )
 
         joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
-        user_msg = f"REQUEST:\n{query}\n\nDATA FRAGMENTS:\n{joined}"
+        hist = self._format_history(history)
+        hist_block = f"{hist}\n\n" if hist else ""
+        user_msg = f"REQUEST:\n{query}\n\n{hist_block}DATA FRAGMENTS:\n{joined}"
 
         try:
             result = await self.llm.complete_structured(
@@ -378,12 +423,20 @@ class Prism:
             search=search,
         )
 
-    async def _extract_query_keypoints(self, query: str) -> QueryKeypoints:
+    async def _extract_query_keypoints(
+        self,
+        query: str,
+        history: History | None = None,
+    ) -> QueryKeypoints:
         corpus = self.corpus_summary or "(no corpus summary available yet)"
-        user_msg = f"DATA CONTEXT:\n{corpus}\n\nInput:\n{query}"
+        parts = [f"DATA CONTEXT:\n{corpus}"]
+        hist = self._format_history(history)
+        if hist:
+            parts.append(hist)
+        parts.append(f"Input:\n{query}")
         return await self.llm.complete_structured(
             system=self._prompts["query_keypoints"],
-            user=user_msg,
+            user="\n\n".join(parts),
             schema=QueryKeypoints,
             tier="fast",
         )
@@ -409,10 +462,19 @@ class Prism:
         )
         return combined
 
-    async def _filter_paragraphs(self, query: str, paragraphs: list[str]) -> list[str]:
+    async def _filter_paragraphs(
+        self,
+        query: str,
+        paragraphs: list[str],
+        history: History | None = None,
+    ) -> list[str]:
+        hist = self._format_history(history)
+        hist_block = f"{hist}\n\n" if hist else ""
+
         async def _judge(paragraph: str) -> str | None:
             user_msg = (
                 f"REQUEST:\n{query}\n\n"
+                f"{hist_block}"
                 f"INFORMATION:\n```\n{paragraph}\n```"
             )
             try:
@@ -420,7 +482,7 @@ class Prism:
                     system=RELEVANCE_FILTER_PROMPT,
                     user=user_msg,
                     schema=RelevanceFilter,
-                    tier="fast",
+                    tier="strong",
                 )
             except Exception as e:
                 log.error(
