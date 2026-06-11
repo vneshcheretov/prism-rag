@@ -281,10 +281,40 @@ All knobs work via constructor arguments or environment variables:
 | `PRISM_LLM_STRONG_MODEL` | `gpt-4o` | Heavy calls: summarization, answers |
 | `PRISM_SONAR_DEVICE` | auto (`cuda` if available) | Force `cpu` / `cuda` for SONAR |
 
+## HTTP API
+
+A thin FastAPI service (`src/prism/api`) wraps `Prism.ingest` / `search` / `answer` for
+non-Python clients. One `Prism` instance (one Qdrant collection) is built on startup from
+the same environment variables as above, plus:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PRISM_COLLECTION` | `prism` | Qdrant collection name |
+| `PRISM_LANGUAGE` | unset (auto-detect) | Lock the corpus language |
+| `PRISM_RECREATE_COLLECTION` | `false` | Drop & recreate the collection on startup |
+| `PRISM_API_HOST` / `PRISM_API_PORT` | `0.0.0.0` / `8000` | Bind address |
+
+```bash
+docker compose up -d        # qdrant + api
+# or, locally:
+pip install -e ".[api,sonar]"
+python -m prism.api
+```
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /ingest` | `{"markdown": "...", "summarize": true}` | indexed nodes, detected language, corpus summary |
+| `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null}` | keypoints + retrieved paragraphs |
+| `POST /answer` | same as `/search` | grounded answer + underlying search result |
+| `GET /health` | — | `{"status": "ok"}` |
+
+Interactive docs at `/docs` (Swagger) and `/redoc`.
+
 ## Project layout
 
 ```
 src/prism/
+├── api/           # FastAPI service (ingest/search/answer over HTTP)
 ├── core/          # Prism orchestrator, graph, chunker
 ├── embeddings/    # Embedder ABC + SONAR implementation
 ├── llm/           # OpenAI client (fast/strong tiers), prompts
@@ -296,7 +326,7 @@ src/prism/
 ## Development
 
 ```bash
-pip install -e ".[sonar,dev]"
+pip install -e ".[sonar,api,dev]"
 pytest                    # fast unit tests
 pytest -m integration     # real SONAR inference (downloads the model)
 ruff check src tests

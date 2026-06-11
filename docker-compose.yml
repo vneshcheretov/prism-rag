@@ -17,5 +17,22 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build: .
+    container_name: prism-api
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      QDRANT_URL: http://qdrant:6333
+      PRISM_COLLECTION: ${PRISM_COLLECTION:-prism}
+      PRISM_LANGUAGE: ${PRISM_LANGUAGE:-}
+      PRISM_LLM_FAST_MODEL: ${PRISM_LLM_FAST_MODEL:-gpt-4o-mini}
+      PRISM_LLM_STRONG_MODEL: ${PRISM_LLM_STRONG_MODEL:-gpt-4o}
+      PRISM_SONAR_DEVICE: ${PRISM_SONAR_DEVICE:-cpu}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
 volumes:
   qdrant_data:
