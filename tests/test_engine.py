@@ -1,10 +1,11 @@
 from typing import TypeVar
 
 import numpy as np
+import pytest
 from pydantic import BaseModel
 from qdrant_client import AsyncQdrantClient
 
-from prism import ChatSession, Embedder, Prism, PrismGraph, QdrantBackend
+from prism import ChatSession, Embedder, IngestError, Prism, PrismGraph, QdrantBackend
 from prism.core.engine import _NON_SEARCHABLE
 
 T = TypeVar("T", bound=BaseModel)
@@ -45,6 +46,14 @@ def _prism(llm: StubLLM) -> Prism:
         AsyncQdrantClient(location=":memory:"), collection_name="test"
     )
     return Prism(PrismGraph(qdrant, FakeEmbedder()), llm)
+
+
+async def test_ingest_blank_input_raises_before_locking_language():
+    prism = _prism(StubLLM())
+    with pytest.raises(IngestError):
+        await prism.ingest("   \n  ")
+    # blank input must not lock in a language
+    assert prism.language is None
 
 
 async def test_search_passes_history_to_query_decomposition():

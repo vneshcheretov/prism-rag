@@ -194,15 +194,24 @@ class Prism:
         extraction after retries are skipped with a warning rather than
         failing the whole ingest — partial success is more useful than
         no result for large documents.
+
+        Raises :class:`IngestError` when the input is empty/blank or yields
+        no indexable content (so the contract is "nodes or error", never a
+        silent empty result). The empty check runs *before* language
+        detection so a blank document never locks in the corpus language.
         """
+        if not markdown.strip():
+            log.warning("ingest: empty input, nothing to ingest")
+            raise IngestError("ingest: empty input")
+
         if self.language is None:
             detected = await detect_language(markdown, llm=self.llm)
             self._set_language(detected)
 
         chunks = self.chunker.chunk(markdown)
         if not chunks:
-            log.warning("ingest: no chunks produced from input")
-            return []
+            log.warning("ingest: no indexable content (sections too short?)")
+            raise IngestError("ingest: no indexable content")
 
         log.info("ingest: extracting %d chunks", len(chunks))
         results = await asyncio.gather(*(self._chunk_to_blueprint(c) for c in chunks))

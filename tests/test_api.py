@@ -231,6 +231,13 @@ def _client_for(prism) -> AsyncClient:
     )
 
 
+async def test_ingest_empty_returns_422():
+    async with await _build_client() as client:
+        resp = await client.post("/ingest", json={"markdown": "   "})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "ingest_failed"
+
+
 async def test_ingest_failure_returns_422():
     qdrant = QdrantBackend(AsyncQdrantClient(location=":memory:"), collection_name="test")
     graph = await PrismGraph.create(qdrant, ConstantEmbedder(), recreate=True)

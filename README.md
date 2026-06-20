@@ -365,6 +365,15 @@ degrade gracefully to a `200` with a `note` — see [above](#graceful-degradatio
 
 Interactive docs at `/docs` (Swagger) and `/redoc`.
 
+### Security & deployment
+
+The API is **unauthenticated by design** — Prism is a self-hosted engine, and each
+deployment runs with its own `OPENAI_API_KEY`, so there is no shared secret to guard at the
+application layer. Authentication, rate limiting, and TLS are deployment concerns: if you
+expose the service publicly, put it behind a reverse proxy or API gateway that handles them.
+Note that `/ingest` cost scales with document size (one LLM call per chunk), so an exposed,
+unprotected instance is a quota-abuse vector — gate it accordingly.
+
 ## Project layout
 
 ```
