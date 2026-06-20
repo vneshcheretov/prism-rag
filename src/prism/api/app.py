@@ -15,6 +15,7 @@ from ..embeddings.sonar import SonarEmbedder
 from ..llm.client import LLMClient
 from ..storage.qdrant import QdrantBackend
 from .config import Settings
+from .errors import register_error_handlers
 from .routes import router
 
 log = logging.getLogger(__name__)
@@ -65,4 +66,5 @@ def create_app(prism: Prism | None = None) -> FastAPI:
     if prism is not None:
         app.state.prism = prism
     app.include_router(router)
+    register_error_handlers(app)
     return app

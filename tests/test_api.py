@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
-from httpx import ASGITransport, AsyncClient
+import openai
+from httpx import ASGITransport, AsyncClient, Request
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from prism import Embedder, MarkdownChunker, Prism, PrismGraph, QdrantBackend
 from prism.api import create_app
@@ -185,3 +187,84 @@ async def test_invalid_history_role_rejected():
             },
         )
     assert resp.status_code == 422
+
+
+# --- error mapping (#3) ---
+
+
+class RaisingFakeLLM(FakeLLM):
+    """Always fails node extraction, so every chunk is dropped and ingest fails."""
+
+    async def complete_structured(self, system, user, schema, *, tier="fast"):
+        if schema is NodeExtraction:
+            raise RuntimeError("extraction boom")
+        return await super().complete_structured(system, user, schema, tier=tier)
+
+
+class RaisingPrism:
+    """Stub injected to exercise the error handlers in isolation."""
+
+    language = "en"
+    corpus_summary = ""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def search(self, *args, **kwargs):
+        raise self._exc
+
+    async def answer(self, *args, **kwargs):
+        raise self._exc
+
+    async def ingest(self, *args, **kwargs):
+        raise self._exc
+
+
+def _client_for(prism) -> AsyncClient:
+    app = create_app(prism=prism)
+    # raise_app_exceptions=False so the catch-all 500 handler's response is
+    # observed instead of Starlette re-raising into the test (production
+    # clients receive the JSON body; the re-raise is only for server logs).
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    )
+
+
+async def test_ingest_failure_returns_422():
+    qdrant = QdrantBackend(AsyncQdrantClient(location=":memory:"), collection_name="test")
+    graph = await PrismGraph.create(qdrant, ConstantEmbedder(), recreate=True)
+    prism = Prism(
+        graph,
+        RaisingFakeLLM(),
+        MarkdownChunker(max_tokens=256, min_section_tokens=10),
+        language="en",
+        chunk_max_retries=1,
+    )
+    async with _client_for(prism) as client:
+        resp = await client.post("/ingest", json={"markdown": MARKDOWN})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "ingest_failed"
+
+
+async def test_llm_error_returns_502():
+    exc = openai.APITimeoutError(request=Request("POST", "http://llm"))
+    async with _client_for(RaisingPrism(exc)) as client:
+        resp = await client.post("/answer", json={"query": "pets?"})
+    assert resp.status_code == 502
+    assert resp.json()["error"] == "llm_unavailable"
+
+
+async def test_storage_error_returns_503():
+    exc = ResponseHandlingException(RuntimeError("connection refused"))
+    async with _client_for(RaisingPrism(exc)) as client:
+        resp = await client.post("/search", json={"query": "pets?"})
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "storage_unavailable"
+
+
+async def test_unexpected_error_returns_500():
+    async with _client_for(RaisingPrism(ValueError("boom"))) as client:
+        resp = await client.post("/search", json={"query": "pets?"})
+    assert resp.status_code == 500
+    assert resp.json()["error"] == "internal_error"

@@ -358,6 +358,11 @@ curl -s localhost:8000/answer -H 'content-type: application/json' -d '{
 }'
 ```
 
+Failures return a consistent JSON body `{"error": "...", "detail": "..."}` with an honest
+status: **422** when ingest can't extract anything usable, **502** when the LLM is down,
+**503** when Qdrant is unavailable, **500** for anything unexpected. (Most other failures
+degrade gracefully to a `200` with a `note` — see [above](#graceful-degradation-not-exceptions).)
+
 Interactive docs at `/docs` (Swagger) and `/redoc`.
 
 ## Project layout

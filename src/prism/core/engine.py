@@ -33,6 +33,14 @@ _NO_KEYPOINTS = "no searchable keypoints could be extracted"
 _LANGUAGE_MISMATCH = "language mismatch"
 
 
+class IngestError(RuntimeError):
+    """Ingest could not produce any usable nodes from the input.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` callers
+    keep working, while giving the API a specific type to map to HTTP 422.
+    """
+
+
 @dataclass
 class SearchResult:
     """End-to-end retrieval result.
@@ -204,7 +212,7 @@ class Prism:
         if failed:
             log.warning("ingest: %d/%d chunks failed extraction", failed, len(chunks))
         if not blueprints:
-            raise RuntimeError("ingest: all chunks failed extraction")
+            raise IngestError("ingest: all chunks failed extraction")
 
         log.info("ingest: indexing %d nodes", len(blueprints))
         nodes = await self.graph.add_nodes(blueprints)
