@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import TypeVar
 
 import openai
@@ -26,6 +27,34 @@ _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     openai.RateLimitError,
     openai.InternalServerError,
 )
+
+
+@dataclass
+class TokenUsage:
+    """Cumulative token counts across all calls made by an ``LLMClient``.
+
+    Tokens (not dollars) are tracked on purpose: pricing changes and varies
+    by model, so cost is left to the operator (``total_tokens`` x your
+    rate). Read it for observability; call :meth:`reset` to snapshot per
+    window.
+    """
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, prompt: int, completion: int, total: int) -> None:
+        self.calls += 1
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_tokens += total
+
+    def reset(self) -> None:
+        self.calls = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
 
 
 class LLMClient:
@@ -64,6 +93,7 @@ class LLMClient:
         self.strong_model = strong_model or os.getenv("PRISM_LLM_STRONG_MODEL", "gpt-5.4-mini")
         self.temperature = temperature
         self.max_retries = max_retries
+        self.usage = TokenUsage()
 
         self.client = client or AsyncOpenAI(
             api_key=api_key or os.getenv("OPENAI_API_KEY"),
@@ -72,6 +102,24 @@ class LLMClient:
 
     def _model_for(self, tier: Tier) -> str:
         return self.strong_model if tier == "strong" else self.fast_model
+
+    def _record_usage(self, response: object, model: str) -> None:
+        """Accumulate token usage from an OpenAI response, if present."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", 0) or 0)
+        self.usage.add(prompt, completion, total)
+        log.debug(
+            "llm usage model=%s prompt=%d completion=%d total=%d (cumulative total=%d)",
+            model,
+            prompt,
+            completion,
+            total,
+            self.usage.total_tokens,
+        )
 
     def _retryer(self) -> AsyncRetrying:
         return AsyncRetrying(
@@ -125,6 +173,7 @@ class LLMClient:
                     kwargs["temperature"] = temp
 
                 response = await self.client.beta.chat.completions.parse(**kwargs)
+                self._record_usage(response, model_name)
                 message = response.choices[0].message
 
                 if message.refusal:
@@ -165,6 +214,7 @@ class LLMClient:
                     kwargs["temperature"] = temp
 
                 response = await self.client.chat.completions.create(**kwargs)
+                self._record_usage(response, model_name)
                 return response.choices[0].message.content or ""
 
         raise RuntimeError("retry loop exited without returning")  # pragma: no cover

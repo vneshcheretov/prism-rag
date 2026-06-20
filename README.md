@@ -378,6 +378,28 @@ expose the service publicly, put it behind a reverse proxy or API gateway that h
 Note that `/ingest` cost scales with document size (one LLM call per chunk), so an exposed,
 unprotected instance is a quota-abuse vector — gate it accordingly.
 
+## Observability
+
+Prism emits the signals; collecting them is a deployment concern (kept out of the library on
+purpose, same as auth).
+
+- **Per-stage retrieval logs** — every `search` logs its funnel at INFO: query keypoints,
+  vector vs lexical hits, neighbor expansion, paragraphs reconstructed, and how many survived
+  the relevance filter. This is the RAG-specific signal — watch the conversion at each stage
+  to spot retrieval regressions and the empty-result rate.
+- **Token usage** — `LLMClient.usage` accumulates prompt/completion/total tokens and call
+  count across the process (cost = `total_tokens` × your model rate; dollars are left to you
+  since pricing changes). Read or reset it per window for cost dashboards.
+- **Health/readiness** — `/health` (liveness) and `/ready` (Qdrant reachable) for uptime
+  monitoring.
+
+For production, scrape RED metrics at your gateway, add OpenTelemetry spans around the
+pipeline stages, and — for answer quality — run **reference-free** evals (faithfulness /
+groundedness, e.g. RAGAS / Langfuse / Phoenix) on a sampled, async slice of traffic:
+`answer()` returns `search.paragraphs` next to the answer, so checking "is the answer
+grounded in the retrieved context?" needs no ground-truth labels. True correctness needs a
+golden dataset and belongs in an offline eval harness.
+
 ## Project layout
 
 ```
