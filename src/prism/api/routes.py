@@ -46,6 +46,7 @@ async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> Searc
         req.query,
         filter_relevance=req.filter_relevance,
         query_language=req.query_language,
+        history=[m.model_dump() for m in req.history],
     )
     return SearchResponse(
         query=result.query,
@@ -61,6 +62,7 @@ async def answer(req: AnswerRequest, prism: Prism = Depends(get_prism)) -> Answe
         req.query,
         filter_relevance=req.filter_relevance,
         query_language=req.query_language,
+        history=[m.model_dump() for m in req.history],
     )
     search_out = None
     if result.search is not None:

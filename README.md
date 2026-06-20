@@ -341,9 +341,22 @@ python -m prism.api
 | Endpoint | Body | Returns |
 |---|---|---|
 | `POST /ingest` | `{"markdown": "...", "summarize": true}` | indexed nodes, detected language, corpus summary |
-| `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null}` | keypoints + retrieved paragraphs |
+| `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | `{"status": "ok"}` |
+
+Follow-up questions work over HTTP too — the service is stateless (like the OpenAI API),
+so the client passes the prior turns in `history` with each request:
+
+```bash
+curl -s localhost:8000/answer -H 'content-type: application/json' -d '{
+  "query": "what about a cat?",
+  "history": [
+    {"role": "user", "content": "can I bring a dog?"},
+    {"role": "assistant", "content": "Yes, pets up to 5 kg are allowed."}
+  ]
+}'
+```
 
 Interactive docs at `/docs` (Swagger) and `/redoc`.
 
