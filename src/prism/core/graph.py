@@ -22,6 +22,16 @@ from .node import NodeBlueprint, PrismNode
 
 log = logging.getLogger(__name__)
 
+# Payload markers distinguishing the special points in a node's block.
+# Keypoint vector points carry no ``kind`` — they are never scrolled by it.
+_KIND_ANCHOR = "anchor"
+_KIND_AGGREGATE = "aggregate"
+_KIND_META = "meta"
+
+# Reserved point id holding Prism-level metadata (corpus summary, language).
+# Node points are numbered from 1, so id 0 never collides.
+_META_POINT_ID = 0
+
 
 class PrismGraph:
     """In-memory knowledge graph backed entirely by Qdrant.
@@ -141,6 +151,94 @@ class PrismGraph:
         await graph.qdrant.ensure_collection(recreate=recreate)
         return graph
 
+    async def load(self) -> int:
+        """Rehydrate the in-memory graph from the persisted Qdrant collection.
+
+        Restores ``nodes`` and ``_paragraph_to_nodes`` from the anchor
+        points (metadata) and aggregate points (per-node vector), then
+        recomputes neighbor edges from the aggregate vectors. No LLM or
+        embedding calls — just a couple of scrolls — so it is cheap
+        compared to re-ingesting.
+
+        Safe to call on an empty collection (returns 0). Returns the number
+        of nodes loaded.
+        """
+        anchors = await self.qdrant.scroll_kind(_KIND_ANCHOR)
+        if not anchors:
+            return 0
+
+        aggregates = await self.qdrant.scroll_kind(_KIND_AGGREGATE, with_vectors=True)
+        vectors: dict[int, np.ndarray] = {}
+        for sp in aggregates:
+            node_id = sp.payload.get("node_id")
+            if node_id is None or sp.vector is None:
+                continue
+            vectors[int(node_id)] = np.asarray(sp.vector, dtype=np.float32)
+
+        max_point_id = _META_POINT_ID
+        nodes: dict[int, PrismNode] = {}
+        paragraph_to_nodes: dict[str, list[int]] = defaultdict(list)
+        for sp in (*anchors, *aggregates):
+            max_point_id = max(max_point_id, sp.point_id)
+
+        for sp in anchors:
+            node_id = sp.payload.get("node_id")
+            if node_id is None:
+                continue
+            node_id = int(node_id)
+            vector = vectors.get(node_id)
+            if vector is None:
+                log.warning("load: node %d has no aggregate vector, skipping", node_id)
+                continue
+            node = PrismNode(
+                index=node_id,
+                name=sp.payload.get("name", ""),
+                text=sp.payload.get("text", ""),
+                keypoints=list(sp.payload.get("keypoints", [])),
+                vector=vector,
+                paragraph_id=sp.payload.get("paragraph_id", ""),
+            )
+            nodes[node_id] = node
+            paragraph_to_nodes[node.paragraph_id].append(node_id)
+
+        self.nodes = nodes
+        self._paragraph_to_nodes = paragraph_to_nodes
+        self._next_node_id = (max(nodes) + 1) if nodes else 1
+        self._next_point_id = max_point_id + 1
+
+        # Neighbors are derived state — recompute from the aggregate vectors
+        # rather than persisting (and risking staleness on incremental ingest).
+        await self.build_neighbors()
+        log.info("load: rehydrated %d nodes from %s", len(nodes), self.qdrant.collection_name)
+        return len(nodes)
+
+    async def save_meta(self, *, language: str | None, corpus_summary: str) -> None:
+        """Persist Prism-level state (language, corpus summary) to Qdrant.
+
+        Stored on a single reserved point so a restarted process can
+        recover it alongside the rehydrated nodes.
+        """
+        await self.qdrant.upsert(
+            [
+                PointStruct(
+                    id=_META_POINT_ID,
+                    vector=self._lexical_anchor_vector(),
+                    payload={
+                        "kind": _KIND_META,
+                        "language": language,
+                        "corpus_summary": corpus_summary,
+                    },
+                )
+            ]
+        )
+
+    async def load_meta(self) -> tuple[str | None, str]:
+        """Read persisted ``(language, corpus_summary)``; defaults if absent."""
+        payload = await self.qdrant.retrieve_payload(_META_POINT_ID)
+        if not payload:
+            return None, ""
+        return payload.get("language"), payload.get("corpus_summary", "")
+
     async def add_nodes(self, blueprints: list[NodeBlueprint]) -> list[PrismNode]:
         if not blueprints:
             return []
@@ -241,13 +339,20 @@ class PrismGraph:
             node_vecs = keypoint_vectors[offset : offset + count]
             offset += count
 
-            # Lexical anchor: only point carrying stems + sentence_stems.
+            # Lexical anchor: the one point per node carrying the lexical
+            # payload AND all metadata needed to rehydrate the node from
+            # Qdrant alone (see ``load``).
             points.append(
                 PointStruct(
                     id=self._next_point_id,
                     vector=self._lexical_anchor_vector(),
                     payload={
+                        "kind": _KIND_ANCHOR,
                         "node_id": node.index,
+                        "name": node.name,
+                        "text": node.text,
+                        "keypoints": node.keypoints,
+                        "paragraph_id": node.paragraph_id,
                         "stems": lex["stems"],
                         "sentence_stems": lex["sentence_stems"],
                     },
@@ -255,10 +360,10 @@ class PrismGraph:
             )
             self._next_point_id += 1
 
-            # Keypoint vectors plus the aggregate. Dedup near-identical
-            # embeddings so we don't burn HNSW slots on duplicates.
+            # Keypoint vectors. Dedup near-identical embeddings so we don't
+            # burn HNSW slots on duplicates.
             seen: set[tuple] = set()
-            for vec in np.vstack([node_vecs, node.vector[np.newaxis, :]]):
+            for vec in node_vecs:
                 key = tuple(np.round(vec, 6))
                 if key in seen:
                     continue
@@ -271,6 +376,17 @@ class PrismGraph:
                     )
                 )
                 self._next_point_id += 1
+
+            # Aggregate vector: always its own marked point so rehydration
+            # can fetch one vector per node (not the whole keypoint block).
+            points.append(
+                PointStruct(
+                    id=self._next_point_id,
+                    vector=node.vector.flatten().tolist(),
+                    payload={"kind": _KIND_AGGREGATE, "node_id": node.index},
+                )
+            )
+            self._next_point_id += 1
 
         await self.qdrant.upsert(points)
 

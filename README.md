@@ -320,7 +320,9 @@ All knobs work via constructor arguments or environment variables:
 
 A thin FastAPI service (`src/prism/api`) wraps `Prism.ingest` / `search` / `answer` for
 non-Python clients. One `Prism` instance (one Qdrant collection) is built on startup from
-the same environment variables as above, plus:
+the same environment variables as above. The in-memory graph is **rehydrated from Qdrant on
+startup** (`Prism.load`), so the service survives restarts without re-ingesting — Qdrant is
+the single source of truth. Extra variables:
 
 | Variable | Default | Purpose |
 |---|---|---|

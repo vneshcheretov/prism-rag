@@ -32,11 +32,16 @@ async def _default_lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     graph = await PrismGraph.create(qdrant, embedder, recreate=settings.recreate_collection)
     llm = LLMClient()
-    app.state.prism = Prism(graph, llm, MarkdownChunker(), language=settings.language)
+    # Rehydrate any previously ingested nodes from Qdrant so the service
+    # survives restarts without re-ingesting. On a fresh collection this is
+    # a no-op and behaves like a brand-new instance.
+    prism = await Prism.load(graph, llm, MarkdownChunker(), language=settings.language)
+    app.state.prism = prism
     log.info(
-        "prism API ready (collection=%s, qdrant=%s)",
+        "prism API ready (collection=%s, qdrant=%s, nodes=%d)",
         settings.collection_name,
         settings.qdrant_url,
+        len(graph.nodes),
     )
 
     try:

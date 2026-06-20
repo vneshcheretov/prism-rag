@@ -148,6 +148,33 @@ class Prism:
         else:
             log.info("Prism: language=%s (embedder is not language-aware)", lang_iso)
 
+    @classmethod
+    async def load(
+        cls,
+        graph: PrismGraph,
+        llm: LLMProvider,
+        chunker: MarkdownChunker | None = None,
+        *,
+        language: str | None = None,
+        **kwargs: object,
+    ) -> Prism:
+        """Build a Prism whose graph is rehydrated from its Qdrant collection.
+
+        Use this instead of the constructor when a previous process already
+        ingested into the same collection: it restores the in-memory nodes,
+        the corpus language, and the corpus summary without re-ingesting.
+
+        On an empty collection it degrades to a fresh instance. An explicit
+        ``language`` overrides whatever was persisted.
+        """
+        prism = cls(graph, llm, chunker, language=language, **kwargs)  # type: ignore[arg-type]
+        await graph.load()
+        meta_language, meta_summary = await graph.load_meta()
+        if language is None and meta_language is not None:
+            prism._set_language(meta_language)
+        prism.corpus_summary = meta_summary
+        return prism
+
     async def ingest(self, markdown: str, *, summarize: bool = True) -> list[PrismNode]:
         """Ingest a markdown document into the graph.
 
@@ -184,6 +211,12 @@ class Prism:
 
         if summarize:
             await self._refresh_corpus_summary(blueprints)
+
+        # Persist engine-level state so a restarted process can recover the
+        # corpus language and summary alongside the rehydrated graph.
+        await self.graph.save_meta(
+            language=self.language, corpus_summary=self.corpus_summary
+        )
 
         return nodes
 
