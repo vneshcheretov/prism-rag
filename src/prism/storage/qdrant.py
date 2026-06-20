@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
+from typing import Any, TypeVar
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     FieldCondition,
@@ -28,6 +31,13 @@ from tenacity import (
 )
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Connection-level failures worth retrying on reads. ``ResponseHandlingException``
+# wraps transport errors (timeouts, dropped/closed connections); HTTP 4xx
+# surface as ``UnexpectedResponse`` and are deliberately not retried.
+_READ_RETRYABLE: tuple[type[BaseException], ...] = (ResponseHandlingException,)
 
 
 @dataclass(slots=True)
@@ -82,6 +92,7 @@ class QdrantBackend:
     DEFAULT_SEARCH_EF = 1024
     DEFAULT_BATCH_SIZE = 300
     DEFAULT_BATCH_CONCURRENCY = 3
+    DEFAULT_READ_RETRIES = 3
 
     def __init__(
         self,
@@ -209,6 +220,22 @@ class QdrantBackend:
             len(batches),
         )
 
+    async def _read(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run a single read against Qdrant, retrying transient transport errors.
+
+        Reads are idempotent, so a dropped/timed-out connection is safe to
+        retry — a transient blip during search no longer fails the request.
+        """
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(self.DEFAULT_READ_RETRIES),
+            wait=wait_random_exponential(multiplier=0.5, max=5),
+            retry=retry_if_exception_type(_READ_RETRYABLE),
+            reraise=True,
+        ):
+            with attempt:
+                return await call()
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def query(
         self,
         vector: list[float],
@@ -228,13 +255,15 @@ class QdrantBackend:
         if must:
             qfilter = Filter(must=must)
 
-        response = await self.client.query_points(
-            collection_name=self.collection_name,
-            query=vector,
-            limit=limit,
-            with_payload=True,
-            query_filter=qfilter,
-            search_params=SearchParams(hnsw_ef=self.hnsw_ef),
+        response = await self._read(
+            lambda: self.client.query_points(
+                collection_name=self.collection_name,
+                query=vector,
+                limit=limit,
+                with_payload=True,
+                query_filter=qfilter,
+                search_params=SearchParams(hnsw_ef=self.hnsw_ef),
+            )
         )
         hits: list[QdrantHit] = []
         for p in response.points:
@@ -283,13 +312,16 @@ class QdrantBackend:
         candidates: list[LexicalCandidate] = []
         offset: Any = None
         while True:
-            points, next_offset = await self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=qfilter,
-                limit=page_size,
-                with_payload=True,
-                with_vectors=False,
-                offset=offset,
+            points, next_offset = await self._read(
+                partial(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=qfilter,
+                    limit=page_size,
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=offset,
+                )
             )
             for p in points:
                 payload = p.payload or {}
@@ -330,13 +362,16 @@ class QdrantBackend:
         results: list[StoredPoint] = []
         offset: Any = None
         while True:
-            points, next_offset = await self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=qfilter,
-                limit=page_size,
-                with_payload=True,
-                with_vectors=with_vectors,
-                offset=offset,
+            points, next_offset = await self._read(
+                partial(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=qfilter,
+                    limit=page_size,
+                    with_payload=True,
+                    with_vectors=with_vectors,
+                    offset=offset,
+                )
             )
             for p in points:
                 vector = None
@@ -353,11 +388,13 @@ class QdrantBackend:
 
     async def retrieve_payload(self, point_id: int) -> dict[str, Any] | None:
         """Read a single point's payload by id, or ``None`` if it is absent."""
-        points = await self.client.retrieve(
-            collection_name=self.collection_name,
-            ids=[point_id],
-            with_payload=True,
-            with_vectors=False,
+        points = await self._read(
+            lambda: self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=False,
+            )
         )
         if not points:
             return None
