@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import logging
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from ..core.engine import Prism
 from .dependencies import get_prism
@@ -14,12 +17,46 @@ from .schemas import (
     SearchResponse,
 )
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
 @router.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness: the process is up and the event loop is responsive.
+
+    Shallow on purpose — wire this to a liveness probe. It must not depend
+    on Qdrant, or a transient storage blip would trigger a pod restart.
+    """
     return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready(request: Request) -> JSONResponse:
+    """Readiness: the engine is loaded and Qdrant is reachable.
+
+    Wire this to a readiness probe — a failure pulls the instance out of
+    rotation (no restart) until its dependencies recover.
+    """
+    prism = getattr(request.app.state, "prism", None)
+    if prism is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "detail": "engine not initialized"},
+        )
+    try:
+        await prism.graph.qdrant.ping()
+    except Exception as e:
+        log.warning("readiness: qdrant unreachable: %s: %s", type(e).__name__, e)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "detail": "qdrant unreachable"},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ready", "nodes": len(prism.graph.nodes)},
+    )
 
 
 @router.post("/ingest", response_model=IngestResponse)

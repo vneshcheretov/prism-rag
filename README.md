@@ -343,7 +343,11 @@ python -m prism.api
 | `POST /ingest` | `{"markdown": "...", "summarize": true}` | indexed nodes, detected language, corpus summary |
 | `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
-| `GET /health` | — | `{"status": "ok"}` |
+| `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
+| `GET /ready` | — | readiness: `200 {"status": "ready", "nodes": N}` if Qdrant is reachable, else `503` |
+
+Wire `/health` to a liveness probe (shallow — never restart on a Qdrant blip) and `/ready`
+to a readiness probe (pulls the instance out of rotation while Qdrant is unreachable).
 
 Follow-up questions work over HTTP too — the service is stateless (like the OpenAI API),
 so the client passes the prior turns in `history` with each request:

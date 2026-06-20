@@ -101,6 +101,27 @@ async def test_health():
     assert resp.json() == {"status": "ok"}
 
 
+async def test_ready_returns_200_when_qdrant_reachable():
+    async with await _build_client() as client:
+        resp = await client.get("/ready")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
+
+
+async def test_ready_returns_503_when_qdrant_down():
+    qdrant = QdrantBackend(AsyncQdrantClient(location=":memory:"), collection_name="test")
+    graph = await PrismGraph.create(qdrant, ConstantEmbedder(), recreate=True)
+    prism = Prism(
+        graph, FakeLLM(), MarkdownChunker(max_tokens=256, min_section_tokens=10), language="en"
+    )
+    app = create_app(prism=prism)
+    await qdrant.client.close()  # simulate Qdrant becoming unreachable
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/ready")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "unavailable"
+
+
 async def test_ingest_search_answer_flow():
     async with await _build_client() as client:
         ingest_resp = await client.post("/ingest", json={"markdown": MARKDOWN})

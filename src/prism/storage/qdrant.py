@@ -418,5 +418,14 @@ class QdrantBackend:
             points_selector=PointIdsList(points=list(point_ids)),
         )
 
+    async def ping(self) -> None:
+        """Lightweight reachability check for readiness probes.
+
+        Deliberately bypasses the read retryer — a probe must reflect the
+        *current* state, not mask a transient blip behind retries. Raises
+        if Qdrant is unreachable.
+        """
+        await self.client.get_collections()
+
     async def close(self) -> None:
         await self.client.close()
