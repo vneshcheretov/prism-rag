@@ -33,8 +33,19 @@ class NodeExtraction(BaseModel):
 
 
 class QueryKeypoints(BaseModel):
-    """Decomposition of a natural-language query into searchable terms."""
+    """Decomposition of a natural-language query into searchable terms.
 
+    Cross-lingual: ``language`` reports the input's own language, while the
+    extracted fields are always produced in the corpus language so that
+    retrieval (lexical + SONAR) stays consistent.
+    """
+
+    language: str = Field(
+        description=(
+            "ISO 639-1 code of the INPUT's own language (e.g. 'en', 'ru'), "
+            "detected from the query text — independent of the output language."
+        )
+    )
     is_searchable: bool = Field(
         description=(
             "False only for inputs with no information-seeking intent at all: "
@@ -44,20 +55,19 @@ class QueryKeypoints(BaseModel):
     )
     short_summary: str = Field(
         description=(
-            "Compact declarative restatement of the input in Russian, content nouns only. "
-            "Non-empty even when is_searchable is false (e.g. 'приветствие')."
+            "Compact declarative restatement of the input in the corpus language, "
+            "content nouns only. Non-empty even when is_searchable is false."
         )
     )
     key_phrases: list[str] = Field(
         description=(
-            "Monolithic noun-based phrases lifted from the query (Russian). "
-            "Each phrase at most two words. "
-            "Empty list allowed when is_searchable is false."
+            "Monolithic noun-based phrases from the query, in the corpus language. "
+            "Each phrase at most two words. Empty list allowed when is_searchable is false."
         )
     )
     synonyms: list[str] = Field(
         description=(
-            "Flat list: each key phrase followed by up to two Russian noun-based "
+            "Flat list: each key phrase followed by up to two corpus-language noun-based "
             "synonyms or alternative phrasings. Domain-aware when DATA CONTEXT is provided."
         )
     )
@@ -119,6 +129,17 @@ class CorpusSummary(BaseModel):
         description=(
             "Concise Russian summary (under 6 sentences) of what the corpus contains, "
             "its main topics, and any obvious structure."
+        )
+    )
+
+
+class DocumentTitle(BaseModel):
+    """A short title inferred from the opening of a document."""
+
+    title: str = Field(
+        description=(
+            "Concise descriptive title for the document (a few words), in the "
+            "document's language. Plain text — no markdown, no surrounding quotes."
         )
     )
 

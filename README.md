@@ -2,6 +2,10 @@
 
 **Hybrid RAG engine that decomposes queries into keypoints and retrieves across dense vectors, lexical stems, and a knowledge graph — in any of 200 languages.**
 
+[![CI](https://github.com/vneshcheretov/prism-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/vneshcheretov/prism-rag/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 ---
 
 Classic RAG embeds your question as a single vector and hopes for the best. **Prism** takes the question apart first.
@@ -56,6 +60,9 @@ flowchart LR
 
 ## Quickstart
 
+> For a full step-by-step walkthrough (library, Docker, FastAPI, HTTP calls), see
+> [docs/getting-started.md](docs/getting-started.md).
+
 ### 1. Prerequisites
 
 - Python **3.11+**
@@ -74,7 +81,7 @@ flowchart LR
 ### 2. Install
 
 ```bash
-git clone https://github.com/vadimscher/prism-rag.git
+git clone https://github.com/vneshcheretov/prism-rag.git
 cd prism-rag
 pip install -e ".[sonar]"
 ```
@@ -145,12 +152,13 @@ keypoints: ['время заезда', 'время выезда', 'время ch
   [1] Время заезда: с 14:00 Время выезда: до 12:00
 ```
 
-A query in the wrong language gets a polite localized refusal instead of garbage:
+A query in another language is auto-translated to the corpus language for retrieval, and the
+answer is translated back — so you can query a Russian corpus in English:
 
 ```
 QUERY: can I bring my dog?
-answer: The corpus is available in Русский only. Please ask your question in this language.
-note:   language mismatch
+answer:     Yes, pets up to 5 kg are allowed.
+translated: True
 ```
 
 ## Usage
@@ -181,6 +189,36 @@ ans.search         # underlying SearchResult for citations
 ans.note           # why the answer is empty, when it is (see below)
 ```
 
+### Follow-up questions
+
+Prism stays stateless — the caller owns the conversation. Pass the recent turns and the
+query analysis resolves follow-up references ("what about a cat?") during decomposition:
+
+History uses the familiar OpenAI chat-message format, so you can pass your existing
+chat log as-is (non-dialogue roles are ignored):
+
+```python
+ans = await prism.answer("can I bring a dog?")
+follow_up = await prism.answer(
+    "what about a cat?",
+    history=[
+        {"role": "user", "content": "can I bring a dog?"},
+        {"role": "assistant", "content": ans.answer},
+    ],
+)
+```
+
+Don't want to manage the log yourself? `ChatSession` does it for one conversation
+(one session per dialogue; sessions share the engine freely):
+
+```python
+from prism import ChatSession
+
+session = ChatSession(prism)
+await session.ask("can I bring a dog?")
+await session.ask("what about a cat?")   # resolved against the history
+```
+
 ### Graceful degradation, not exceptions
 
 The pipeline short-circuits cheaply and explains itself via `note`:
@@ -189,8 +227,11 @@ The pipeline short-circuits cheaply and explains itself via `note`:
 |---|---|
 | `""` | `empty query` — zero LLM calls |
 | `"hi there"` | `query is not an information request` — one cheap LLM call, no retrieval |
-| Query in a language other than the corpus | `language mismatch` — localized refusal in `answer` |
-| Question the corpus can't answer | `no relevant fragments retrieved` |
+| Question the corpus can't answer | `no relevant fragments retrieved` — `answer` carries a polite "not in the data" reply (in the user's language) |
+
+A query in a different language is **translated** (not refused): the query decomposition
+detects the language and emits keypoints in the corpus language for retrieval, the answer is
+translated back to the user's language, and `translated: true` flags it on the result.
 
 ### Bring your own embedder
 
@@ -248,11 +289,15 @@ llm = LLMClient(
 `prism.LLMProvider` protocol (structural typing — no inheritance required):
 
 ```python
+from typing import TypeVar
+
 from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class MyLLM:
-    async def complete_structured[T: BaseModel](
+    async def complete_structured(
         self, system: str, user: str, schema: type[T], *, tier: str = "fast"
     ) -> T:
         """MUST return a validated instance of `schema` (or raise)."""
@@ -265,9 +310,10 @@ class MyLLM:
         ...
 ```
 
-`tier` declares intent: `fast` = high-volume calls (extraction, query analysis, filtering),
-`strong` = heavy one-offs (summaries, answers); mapping both to one model is fine. Retries
-are your responsibility — the pipeline treats every call as a single attempt.
+`tier` declares intent: `fast` = high-volume extraction (chunk keypoints, query analysis),
+`strong` = judgement and synthesis (relevance filter, summaries, answers); mapping both to
+one model is fine. Retries are your responsibility — the pipeline treats every call as a
+single attempt.
 
 ### Configuration
 
@@ -277,14 +323,107 @@ All knobs work via constructor arguments or environment variables:
 |---|---|---|
 | `OPENAI_API_KEY` | — | OpenAI auth (required) |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `PRISM_LLM_FAST_MODEL` | `gpt-4o-mini` | High-volume calls: extraction, filtering |
-| `PRISM_LLM_STRONG_MODEL` | `gpt-4o` | Heavy calls: summarization, answers |
+| `PRISM_LLM_FAST_MODEL` | `gpt-5.4-nano` | High-volume extraction: chunk keypoints, query analysis |
+| `PRISM_LLM_STRONG_MODEL` | `gpt-5.4-mini` | Judgement & synthesis: relevance filter, summaries, answers |
 | `PRISM_SONAR_DEVICE` | auto (`cuda` if available) | Force `cpu` / `cuda` for SONAR |
+
+## HTTP API
+
+A thin FastAPI service (`src/prism/api`) wraps `Prism.ingest` / `search` / `answer` for
+non-Python clients. One `Prism` instance (one Qdrant collection) is built on startup from
+the same environment variables as above. The in-memory graph is **rehydrated from Qdrant on
+startup** (`Prism.load`), so the service survives restarts without re-ingesting — Qdrant is
+the single source of truth. Extra variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PRISM_COLLECTION` | `prism` | Qdrant collection name |
+| `PRISM_LANGUAGE` | unset (auto-detect) | Lock the corpus language |
+| `PRISM_RECREATE_COLLECTION` | `false` | Drop & recreate the collection on startup |
+| `PRISM_API_HOST` / `PRISM_API_PORT` | `0.0.0.0` / `8000` | Bind address |
+
+```bash
+docker compose up -d        # qdrant + api
+# or, locally:
+pip install -e ".[api,sonar]"
+python -m prism.api
+```
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /ingest/markdown` | raw markdown in the request body (`text/markdown`) | indexed nodes, detected language, corpus summary |
+| `POST /convert/file` | multipart `file` (PDF, DOCX, HTML, ...) | `{"markdown", "title"}` — convert only (then send to `/ingest/markdown`); needs the `convert` extra |
+| `POST /convert/structured` | multipart `file` | same, plus an LLM pass that infers `#` headings — for sources with no usable structure |
+| `POST /search` | `{"query": "...", "history": []}` | keypoints + retrieved paragraphs |
+| `POST /answer` | same as `/search` | grounded answer + underlying search result |
+| `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
+| `GET /ready` | — | readiness: `200 {"status": "ready", "nodes": N}` if Qdrant is reachable, else `503` |
+
+Wire `/health` to a liveness probe (shallow — never restart on a Qdrant blip) and `/ready`
+to a readiness probe (pulls the instance out of rotation while Qdrant is unreachable).
+
+`/convert/file` turns PDF/DOCX/PPTX/XLSX/HTML/... into markdown (via markitdown) — but it
+only emits `#` headings when the source carries real heading styles; PDFs and bold-faked
+headings convert to flat text. When the source has no usable structure, `/convert/structured`
+adds an LLM pass that infers headings. Review the result before sending it to
+`/ingest/markdown`.
+
+Follow-up questions work over HTTP too — the service is stateless (like the OpenAI API),
+so the client passes the prior turns in `history` with each request:
+
+```bash
+curl -s localhost:8000/answer -H 'content-type: application/json' -d '{
+  "query": "what about a cat?",
+  "history": [
+    {"role": "user", "content": "can I bring a dog?"},
+    {"role": "assistant", "content": "Yes, pets up to 5 kg are allowed."}
+  ]
+}'
+```
+
+Failures return a consistent JSON body `{"error": "...", "detail": "..."}` with an honest
+status: **422** when ingest can't extract anything usable, **502** when the LLM is down,
+**503** when Qdrant is unavailable, **500** for anything unexpected. (Most other failures
+degrade gracefully to a `200` with a `note` — see [above](#graceful-degradation-not-exceptions).)
+
+Interactive docs at `/docs` (Swagger) and `/redoc`.
+
+### Security & deployment
+
+The API is **unauthenticated by design** — Prism is a self-hosted engine, and each
+deployment runs with its own `OPENAI_API_KEY`, so there is no shared secret to guard at the
+application layer. Authentication, rate limiting, and TLS are deployment concerns: if you
+expose the service publicly, put it behind a reverse proxy or API gateway that handles them.
+Note that `/ingest` cost scales with document size (one LLM call per chunk), so an exposed,
+unprotected instance is a quota-abuse vector — gate it accordingly.
+
+## Observability
+
+Prism emits the signals; collecting them is a deployment concern (kept out of the library on
+purpose, same as auth).
+
+- **Per-stage retrieval logs** — every `search` logs its funnel at INFO: query keypoints,
+  vector vs lexical hits, neighbor expansion, paragraphs reconstructed, and how many survived
+  the relevance filter. This is the RAG-specific signal — watch the conversion at each stage
+  to spot retrieval regressions and the empty-result rate.
+- **Token usage** — `LLMClient.usage` accumulates prompt/completion/total tokens and call
+  count across the process (cost = `total_tokens` × your model rate; dollars are left to you
+  since pricing changes). Read or reset it per window for cost dashboards.
+- **Health/readiness** — `/health` (liveness) and `/ready` (Qdrant reachable) for uptime
+  monitoring.
+
+For production, scrape RED metrics at your gateway, add OpenTelemetry spans around the
+pipeline stages, and — for answer quality — run **reference-free** evals (faithfulness /
+groundedness, e.g. RAGAS / Langfuse / Phoenix) on a sampled, async slice of traffic:
+`answer()` returns `search.paragraphs` next to the answer, so checking "is the answer
+grounded in the retrieved context?" needs no ground-truth labels. True correctness needs a
+golden dataset and belongs in an offline eval harness.
 
 ## Project layout
 
 ```
 src/prism/
+├── api/           # FastAPI service (ingest/search/answer over HTTP)
 ├── core/          # Prism orchestrator, graph, chunker
 ├── embeddings/    # Embedder ABC + SONAR implementation
 ├── llm/           # OpenAI client (fast/strong tiers), prompts
@@ -296,7 +435,7 @@ src/prism/
 ## Development
 
 ```bash
-pip install -e ".[sonar,dev]"
+pip install -e ".[sonar,api,dev]"
 pytest                    # fast unit tests
 pytest -m integration     # real SONAR inference (downloads the model)
 ruff check src tests

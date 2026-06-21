@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from ..embeddings.sonar import resolve_flores_code
-from ..llm.base import LLMProvider
-from ..llm.prompts import RELEVANCE_FILTER_PROMPT, build_prompts
+from ..llm.base import LLMProvider, Tier
+from ..llm.prompts import (
+    RELEVANCE_FILTER_PROMPT,
+    TRANSLATE_LIKE_PROMPT,
+    build_prompts,
+)
 from ..schemas.llm_outputs import (
     CorpusSummary,
     NodeExtraction,
@@ -14,17 +19,30 @@ from ..schemas.llm_outputs import (
     RelevanceFilter,
     Summarization,
 )
-from ..utils.language import detect_language, english_name, format_mismatch_message
+from ..utils.language import detect_language, english_name
+from ..utils.text import normalize_newlines
 from .chunker import Chunk, MarkdownChunker
 from .graph import PrismGraph
 from .node import NodeBlueprint, PrismNode
 
 log = logging.getLogger(__name__)
 
+# OpenAI-style chat messages: {"role": "user" | "assistant", "content": "..."}.
+History = Sequence[Mapping[str, str]]
+
+_HISTORY_MAX_MESSAGES = 12
+
 _EMPTY_QUERY = "empty query"
 _NON_SEARCHABLE = "query is not an information request"
 _NO_KEYPOINTS = "no searchable keypoints could be extracted"
-_LANGUAGE_MISMATCH = "language mismatch"
+
+
+class IngestError(RuntimeError):
+    """Ingest could not produce any usable nodes from the input.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` callers
+    keep working, while giving the API a specific type to map to HTTP 422.
+    """
 
 
 @dataclass
@@ -38,6 +56,10 @@ class SearchResult:
     ``note`` is set when the pipeline short-circuited before retrieval
     (e.g. the query was empty or judged non-searchable) — in that case
     ``paragraphs`` is empty and ``note`` explains why.
+
+    ``translated`` is True when the query language differed from the corpus
+    (the decomposition emits keypoints in the corpus language either way);
+    ``paragraphs`` always stay in the corpus (document) language.
     """
 
     query: str
@@ -45,6 +67,7 @@ class SearchResult:
     paragraphs: list[str] = field(default_factory=list)
     nodes: list[PrismNode] = field(default_factory=list)
     note: str | None = None
+    translated: bool = False
 
     @property
     def text(self) -> str:
@@ -60,6 +83,10 @@ class AnswerResult:
 
     ``answer`` is empty when retrieval returned nothing or the
     summarization call failed — in that case ``note`` explains why.
+
+    ``answer`` is in the user's query language: when the query language
+    differs from the corpus, the synthesized answer is translated back.
+    ``translated`` mirrors the underlying search result.
     """
 
     query: str
@@ -67,6 +94,7 @@ class AnswerResult:
     final_summary: str = ""
     search: SearchResult | None = None
     note: str | None = None
+    translated: bool = False
 
 
 class Prism:
@@ -142,26 +170,77 @@ class Prism:
         else:
             log.info("Prism: language=%s (embedder is not language-aware)", lang_iso)
 
-    async def ingest(self, markdown: str, *, summarize: bool = True) -> list[PrismNode]:
+    @classmethod
+    async def load(
+        cls,
+        graph: PrismGraph,
+        llm: LLMProvider,
+        chunker: MarkdownChunker | None = None,
+        *,
+        language: str | None = None,
+        **kwargs: object,
+    ) -> Prism:
+        """Build a Prism whose graph is rehydrated from its Qdrant collection.
+
+        Use this instead of the constructor when a previous process already
+        ingested into the same collection: it restores the in-memory nodes,
+        the corpus language, and the corpus summary without re-ingesting.
+
+        On an empty collection it degrades to a fresh instance. An explicit
+        ``language`` overrides whatever was persisted.
+        """
+        prism = cls(graph, llm, chunker, language=language, **kwargs)  # type: ignore[arg-type]
+        await graph.load()
+        meta_language, meta_summary = await graph.load_meta()
+        if language is None and meta_language is not None:
+            prism._set_language(meta_language)
+        prism.corpus_summary = meta_summary
+        return prism
+
+    async def ingest(self, markdown: str) -> list[PrismNode]:
         """Ingest a markdown document into the graph.
+
+        Pipeline: chunk by headers → LLM keypoint extraction per chunk →
+        embed and index into Qdrant → refresh the corpus summary.
 
         If ``language`` was not set at construction time, the language of
         the first ingested document is auto-detected (heuristic + optional
         LLM fallback) and locked in for the lifetime of the Prism instance.
 
+        The corpus summary is refreshed over **all** indexed nodes at the
+        end (one ``strong``-tier call). It is reused as DATA CONTEXT during
+        query decomposition, so synonyms reflect how this corpus actually
+        names things — and it is persisted so a restart can recover it.
+        On a multi-document corpus this means each ingest re-summarizes the
+        whole corpus, keeping the summary representative rather than
+        describing only the latest batch.
+
         Returns the list of newly created nodes. Chunks that fail LLM
         extraction after retries are skipped with a warning rather than
         failing the whole ingest — partial success is more useful than
         no result for large documents.
+
+        Raises :class:`IngestError` when the input is empty/blank or yields
+        no indexable content (so the contract is "nodes or error", never a
+        silent empty result). The empty check runs *before* language
+        detection so a blank document never locks in the corpus language.
+
+        Literal ``\\n`` escapes in single-line input (a common paste mistake)
+        are turned into real newlines first — see :func:`normalize_newlines`.
         """
+        markdown = normalize_newlines(markdown)
+        if not markdown.strip():
+            log.warning("ingest: empty input, nothing to ingest")
+            raise IngestError("ingest: empty input")
+
         if self.language is None:
             detected = await detect_language(markdown, llm=self.llm)
             self._set_language(detected)
 
         chunks = self.chunker.chunk(markdown)
         if not chunks:
-            log.warning("ingest: no chunks produced from input")
-            return []
+            log.warning("ingest: no indexable content (sections too short?)")
+            raise IngestError("ingest: no indexable content")
 
         log.info("ingest: extracting %d chunks", len(chunks))
         results = await asyncio.gather(*(self._chunk_to_blueprint(c) for c in chunks))
@@ -171,13 +250,18 @@ class Prism:
         if failed:
             log.warning("ingest: %d/%d chunks failed extraction", failed, len(chunks))
         if not blueprints:
-            raise RuntimeError("ingest: all chunks failed extraction")
+            raise IngestError("ingest: all chunks failed extraction")
 
         log.info("ingest: indexing %d nodes", len(blueprints))
         nodes = await self.graph.add_nodes(blueprints)
 
-        if summarize:
-            await self._refresh_corpus_summary(blueprints)
+        await self._refresh_corpus_summary()
+
+        # Persist engine-level state so a restarted process can recover the
+        # corpus language and summary alongside the rehydrated graph.
+        await self.graph.save_meta(
+            language=self.language, corpus_summary=self.corpus_summary
+        )
 
         return nodes
 
@@ -221,10 +305,18 @@ class Prism:
                 delay *= 2
         return None
 
-    async def _refresh_corpus_summary(self, blueprints: list[NodeBlueprint]) -> None:
+    async def _refresh_corpus_summary(self) -> None:
+        """Rebuild the corpus summary over all indexed nodes.
+
+        Summarizing the whole graph (not just the latest ingest's nodes)
+        keeps the summary representative across multiple ingests.
+        """
         thumbnails = [
-            f"{bp.name}: " + ", ".join(bp.keypoints[:5]) for bp in blueprints
+            f"{node.name}: " + ", ".join(node.keypoints[:5])
+            for node in self.graph.nodes.values()
         ]
+        if not thumbnails:
+            return
         joined = "\n".join(thumbnails)
         try:
             result = await self.llm.complete_structured(
@@ -240,44 +332,80 @@ class Prism:
                 "ingest: corpus summarization failed: %s: %s", type(e).__name__, e
             )
 
-    def _language_mismatch_message(self, query_language: str | None) -> str | None:
-        """Return a localized hint when the query language differs from the corpus.
+    async def _translate_like(self, reference: str, text: str, *, tier: Tier) -> str:
+        """Translate ``text`` into the language of ``reference`` (the query)."""
+        user = f"USER QUERY:\n{reference}\n\nANSWER:\n{text}"
+        out = await self.llm.complete_text(system=TRANSLATE_LIKE_PROMPT, user=user, tier=tier)
+        return out.strip() or text
 
-        Returns ``None`` (no mismatch) when either side is unknown — we don't
-        block retrieval just because the caller didn't tag the query.
+    @staticmethod
+    def _format_history(history: History | None) -> str:
+        """Render recent dialogue messages for inclusion in LLM user messages.
+
+        ``history`` is a sequence of OpenAI-style chat messages
+        (``{"role": "user" | "assistant", "content": "..."}``), oldest
+        first — so callers can pass their existing chat log as-is. The
+        engine itself stays stateless: the caller owns the conversation.
+
+        Only the last few messages are kept to bound tokens; messages with
+        other roles (``system``, ``tool``) or empty content are skipped.
+        Returns ``""`` when there is nothing to show.
         """
-        if not query_language or not self.language:
-            return None
-        if query_language == self.language:
-            return None
-        return format_mismatch_message(query_language, self.language)
+        if not history:
+            return ""
+        lines: list[str] = []
+        for message in list(history)[-_HISTORY_MAX_MESSAGES:]:
+            role = str(message.get("role", "")).strip().lower()
+            content = str(message.get("content", "")).strip()
+            if role not in ("user", "assistant") or not content:
+                continue
+            lines.append(f"{role.capitalize()}: {content}")
+        if not lines:
+            return ""
+        return "DIALOGUE HISTORY (oldest first):\n" + "\n".join(lines)
 
     async def search(
         self,
         query: str,
         *,
         filter_relevance: bool = True,
-        query_language: str | None = None,
+        history: History | None = None,
     ) -> SearchResult:
+        """Retrieve relevant paragraphs for a natural-language query.
+
+        Cross-lingual: the query decomposition (a call we make anyway)
+        reports the query's language and emits keypoints in the corpus
+        language, so a foreign query retrieves correctly without a separate
+        translation step. Retrieved ``paragraphs`` are returned verbatim in
+        the corpus/document language; ``translated`` is True when the query
+        language differed from the corpus.
+
+        ``history`` enables follow-up questions: pass the recent chat
+        messages in OpenAI format (``{"role": "user" | "assistant",
+        "content": ...}``) and the query decomposition resolves
+        pronouns/ellipsis against them. Retrieval itself stays stateless.
+        """
         q = query.strip() if query else ""
         if not q:
             return SearchResult(query=query, note=_EMPTY_QUERY)
 
         log.info("search: query=%r", q)
 
-        mismatch = self._language_mismatch_message(query_language)
-        if mismatch:
-            return SearchResult(query=query, note=mismatch)
-
         try:
-            kp = await self._extract_query_keypoints(q)
+            kp = await self._extract_query_keypoints(q, history)
         except Exception as e:
             log.error("search: keypoint extraction failed: %s: %s", type(e).__name__, e)
             return SearchResult(query=query, note=f"keypoint extraction error: {e}")
 
+        translated = bool(self.language and kp.language and kp.language != self.language)
+        if translated:
+            log.info("search: cross-lingual query (%s -> %s)", kp.language, self.language)
+
         if not kp.is_searchable:
             log.info("search: non-searchable input, skipping retrieval")
-            return SearchResult(query=query, note=_NON_SEARCHABLE)
+            return SearchResult(
+                query=query, note=_NON_SEARCHABLE, translated=translated
+            )
 
         keypoints = list(
             dict.fromkeys(
@@ -285,7 +413,9 @@ class Prism:
             )
         )
         if not keypoints:
-            return SearchResult(query=query, note=_NO_KEYPOINTS)
+            return SearchResult(
+                query=query, note=_NO_KEYPOINTS, translated=translated
+            )
 
         log.info("search: keypoints=%s", keypoints)
 
@@ -299,7 +429,7 @@ class Prism:
 
         if filter_relevance and paragraphs:
             before = len(paragraphs)
-            paragraphs = await self._filter_paragraphs(query, paragraphs)
+            paragraphs = await self._filter_paragraphs(query, paragraphs, history)
             log.info("search: relevance filter kept %d/%d paragraphs", len(paragraphs), before)
 
         return SearchResult(
@@ -307,6 +437,7 @@ class Prism:
             keypoints=keypoints,
             paragraphs=paragraphs,
             nodes=nodes,
+            translated=translated,
         )
 
     async def answer(
@@ -314,47 +445,44 @@ class Prism:
         query: str,
         *,
         filter_relevance: bool = True,
-        query_language: str | None = None,
+        history: History | None = None,
     ) -> AnswerResult:
         """End-to-end: retrieve relevant fragments and synthesize an answer.
 
-        Thin opt-in wrapper over :py:meth:`search` plus a single LLM call
-        that grounds the answer in the retrieved fragments. Returns the
-        underlying ``SearchResult`` on ``AnswerResult.search`` so callers
-        can still show citations or fall back to raw fragments.
+        Thin wrapper over :py:meth:`search` plus a grounding LLM call.
+        Returns the underlying ``SearchResult`` on ``AnswerResult.search``
+        so callers can still show citations or fall back to raw fragments.
 
-        When ``query_language`` is given and differs from the corpus
-        language, returns immediately with a localized message in the
-        query language explaining the mismatch — no retrieval, no LLM
-        calls. Use this to politely refuse cross-language queries.
-
-        Short-circuits without calling the summarization LLM when
-        retrieval yielded nothing — the ``note`` on the search result is
-        propagated.
+        Cross-lingual: when the query language differs from the corpus, the
+        answer is synthesized in the corpus language and then translated back
+        to the user's language. Short-circuits without summarizing when
+        retrieval yielded nothing — the ``note`` is propagated.
         """
-        mismatch = self._language_mismatch_message(query_language)
-        if mismatch:
-            return AnswerResult(
-                query=query,
-                answer=mismatch,
-                note=_LANGUAGE_MISMATCH,
-            )
-
         search = await self.search(
             query,
             filter_relevance=filter_relevance,
-            query_language=query_language,
+            history=history,
         )
 
-        if not search.paragraphs:
+        # A short-circuited search (empty/non-searchable/error) carries a note —
+        # propagate it without an LLM call. A searchable query that simply found
+        # nothing (note is None) still goes to summarization: the prompt replies
+        # that the data has no answer rather than returning an empty string.
+        if not search.paragraphs and search.note is not None:
             return AnswerResult(
                 query=query,
                 search=search,
-                note=search.note or "no relevant fragments retrieved",
+                note=search.note,
+                translated=search.translated,
             )
 
-        joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
-        user_msg = f"REQUEST:\n{query}\n\nDATA FRAGMENTS:\n{joined}"
+        if search.paragraphs:
+            joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
+        else:
+            joined = "(no relevant data found)"
+        hist = self._format_history(history)
+        hist_block = f"{hist}\n\n" if hist else ""
+        user_msg = f"REQUEST:\n{query}\n\n{hist_block}DATA FRAGMENTS:\n{joined}"
 
         try:
             result = await self.llm.complete_structured(
@@ -369,21 +497,39 @@ class Prism:
                 query=query,
                 search=search,
                 note=f"summarization error: {e}",
+                translated=search.translated,
             )
+
+        answer_text = result.summary
+        if search.translated:
+            answer_text = await self._translate_like(query, answer_text, tier="strong")
+            log.info("answer: translated answer back to the query language")
 
         return AnswerResult(
             query=query,
-            answer=result.summary,
+            answer=answer_text,
             final_summary=result.final_summary,
             search=search,
+            # still flag "nothing retrieved" for callers even though `answer`
+            # now carries a polite not-found message instead of being empty.
+            note=None if search.paragraphs else "no relevant fragments retrieved",
+            translated=search.translated,
         )
 
-    async def _extract_query_keypoints(self, query: str) -> QueryKeypoints:
+    async def _extract_query_keypoints(
+        self,
+        query: str,
+        history: History | None = None,
+    ) -> QueryKeypoints:
         corpus = self.corpus_summary or "(no corpus summary available yet)"
-        user_msg = f"DATA CONTEXT:\n{corpus}\n\nInput:\n{query}"
+        parts = [f"DATA CONTEXT:\n{corpus}"]
+        hist = self._format_history(history)
+        if hist:
+            parts.append(hist)
+        parts.append(f"Input:\n{query}")
         return await self.llm.complete_structured(
             system=self._prompts["query_keypoints"],
-            user=user_msg,
+            user="\n\n".join(parts),
             schema=QueryKeypoints,
             tier="fast",
         )
@@ -409,10 +555,19 @@ class Prism:
         )
         return combined
 
-    async def _filter_paragraphs(self, query: str, paragraphs: list[str]) -> list[str]:
+    async def _filter_paragraphs(
+        self,
+        query: str,
+        paragraphs: list[str],
+        history: History | None = None,
+    ) -> list[str]:
+        hist = self._format_history(history)
+        hist_block = f"{hist}\n\n" if hist else ""
+
         async def _judge(paragraph: str) -> str | None:
             user_msg = (
                 f"REQUEST:\n{query}\n\n"
+                f"{hist_block}"
                 f"INFORMATION:\n```\n{paragraph}\n```"
             )
             try:
@@ -420,7 +575,7 @@ class Prism:
                     system=RELEVANCE_FILTER_PROMPT,
                     user=user_msg,
                     schema=RelevanceFilter,
-                    tier="fast",
+                    tier="strong",
                 )
             except Exception as e:
                 log.error(

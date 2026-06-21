@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from qdrant_client import AsyncQdrantClient
 
 from prism import (
+    ChatSession,
     LLMClient,
     MarkdownChunker,
     Prism,
@@ -84,7 +85,7 @@ async def main() -> None:
     )
 
     graph = await PrismGraph.create(qdrant, embedder, recreate=True)
-    llm = LLMClient(temperature=None)
+    llm = LLMClient()
     prism = Prism(
         graph,
         llm,
@@ -118,11 +119,23 @@ async def main() -> None:
         if ans.note:
             print(f"note:          {ans.note}")
 
-        # Cross-language: ask in English over a Russian corpus.
+        # Follow-up questions: ChatSession owns the dialogue log, the
+        # engine stays stateless. The second, elliptical query is
+        # meaningless on its own — history resolves it to real keypoints.
+        print("\n=== FOLLOW-UP (ChatSession) ===")
+        session = ChatSession(prism)
+        for q in ("можно ли с собакой?", "а с кошкой?"):
+            res = await session.ask(q)
+            print(f"Q: {q}")
+            print(f"A: {res.answer or res.note}")
+
+        # Cross-language: ask in English over a Russian corpus. The query is
+        # auto-translated to Russian for retrieval, and the answer is
+        # translated back to English.
         print("\n=== CROSS-LANGUAGE (en query, ru corpus) ===")
-        en = await prism.answer("can I bring my dog?", query_language="en")
-        print(f"answer: {en.answer}")
-        print(f"note:   {en.note}")
+        en = await prism.answer("can I bring my dog?")
+        print(f"answer:     {en.answer}")
+        print(f"translated: {en.translated}")
     finally:
         await qdrant.client.close()
 

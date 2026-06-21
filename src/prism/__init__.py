@@ -2,8 +2,12 @@
 
 from .core import (
     AnswerResult,
+    ChatSession,
     Chunk,
+    History,
+    IngestError,
     MarkdownChunker,
+    MarkdownStructurer,
     NodeBlueprint,
     Prism,
     PrismGraph,
@@ -18,11 +22,15 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AnswerResult",
+    "ChatSession",
     "Chunk",
     "Embedder",
+    "History",
+    "IngestError",
     "LLMClient",
     "LLMProvider",
     "MarkdownChunker",
+    "MarkdownStructurer",
     "NodeBlueprint",
     "Prism",
     "PrismGraph",

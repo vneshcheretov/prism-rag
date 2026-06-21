@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
+from typing import Any, TypeVar
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     FieldCondition,
@@ -28,6 +31,13 @@ from tenacity import (
 )
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Connection-level failures worth retrying on reads. ``ResponseHandlingException``
+# wraps transport errors (timeouts, dropped/closed connections); HTTP 4xx
+# surface as ``UnexpectedResponse`` and are deliberately not retried.
+_READ_RETRYABLE: tuple[type[BaseException], ...] = (ResponseHandlingException,)
 
 
 @dataclass(slots=True)
@@ -53,6 +63,15 @@ class LexicalCandidate:
     sentence_stems: list[list[str]]
 
 
+@dataclass(slots=True)
+class StoredPoint:
+    """A raw point read back from Qdrant during graph rehydration."""
+
+    point_id: int
+    payload: dict[str, Any]
+    vector: list[float] | None = None
+
+
 class QdrantBackend:
     """Thin async wrapper around ``AsyncQdrantClient`` for Prism.
 
@@ -73,6 +92,7 @@ class QdrantBackend:
     DEFAULT_SEARCH_EF = 1024
     DEFAULT_BATCH_SIZE = 300
     DEFAULT_BATCH_CONCURRENCY = 3
+    DEFAULT_READ_RETRIES = 3
 
     def __init__(
         self,
@@ -150,6 +170,7 @@ class QdrantBackend:
         for field, schema in (
             ("stems", PayloadSchemaType.KEYWORD),
             ("node_id", PayloadSchemaType.INTEGER),
+            ("kind", PayloadSchemaType.KEYWORD),
         ):
             try:
                 await self.client.create_payload_index(
@@ -199,6 +220,22 @@ class QdrantBackend:
             len(batches),
         )
 
+    async def _read(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run a single read against Qdrant, retrying transient transport errors.
+
+        Reads are idempotent, so a dropped/timed-out connection is safe to
+        retry — a transient blip during search no longer fails the request.
+        """
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(self.DEFAULT_READ_RETRIES),
+            wait=wait_random_exponential(multiplier=0.5, max=5),
+            retry=retry_if_exception_type(_READ_RETRYABLE),
+            reraise=True,
+        ):
+            with attempt:
+                return await call()
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def query(
         self,
         vector: list[float],
@@ -218,13 +255,15 @@ class QdrantBackend:
         if must:
             qfilter = Filter(must=must)
 
-        response = await self.client.query_points(
-            collection_name=self.collection_name,
-            query=vector,
-            limit=limit,
-            with_payload=True,
-            query_filter=qfilter,
-            search_params=SearchParams(hnsw_ef=self.hnsw_ef),
+        response = await self._read(
+            lambda: self.client.query_points(
+                collection_name=self.collection_name,
+                query=vector,
+                limit=limit,
+                with_payload=True,
+                query_filter=qfilter,
+                search_params=SearchParams(hnsw_ef=self.hnsw_ef),
+            )
         )
         hits: list[QdrantHit] = []
         for p in response.points:
@@ -273,13 +312,16 @@ class QdrantBackend:
         candidates: list[LexicalCandidate] = []
         offset: Any = None
         while True:
-            points, next_offset = await self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=qfilter,
-                limit=page_size,
-                with_payload=True,
-                with_vectors=False,
-                offset=offset,
+            points, next_offset = await self._read(
+                partial(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=qfilter,
+                    limit=page_size,
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=offset,
+                )
             )
             for p in points:
                 payload = p.payload or {}
@@ -302,6 +344,62 @@ class QdrantBackend:
 
         return candidates
 
+    async def scroll_kind(
+        self,
+        kind: str,
+        *,
+        with_vectors: bool = False,
+        page_size: int = 512,
+    ) -> list[StoredPoint]:
+        """Return every point whose payload ``kind`` matches, paging through all.
+
+        Used at startup to rehydrate the in-memory graph: ``kind="anchor"``
+        carries node metadata, ``kind="aggregate"`` carries the per-node
+        aggregate vector. Keypoint points are unmarked and never scrolled
+        here, so the bulk of the vectors stays on the server.
+        """
+        qfilter = Filter(must=[FieldCondition(key="kind", match=MatchValue(value=kind))])
+        results: list[StoredPoint] = []
+        offset: Any = None
+        while True:
+            points, next_offset = await self._read(
+                partial(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=qfilter,
+                    limit=page_size,
+                    with_payload=True,
+                    with_vectors=with_vectors,
+                    offset=offset,
+                )
+            )
+            for p in points:
+                vector = None
+                raw_vector = p.vector
+                if with_vectors and isinstance(raw_vector, list):
+                    vector = [float(x) for x in raw_vector if isinstance(x, int | float)]
+                results.append(
+                    StoredPoint(point_id=int(p.id), payload=p.payload or {}, vector=vector)
+                )
+            if next_offset is None:
+                break
+            offset = next_offset
+        return results
+
+    async def retrieve_payload(self, point_id: int) -> dict[str, Any] | None:
+        """Read a single point's payload by id, or ``None`` if it is absent."""
+        points = await self._read(
+            lambda: self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+        )
+        if not points:
+            return None
+        return points[0].payload or {}
+
     async def delete_by_node_ids(self, node_ids: list[int]) -> None:
         if not node_ids:
             return
@@ -319,6 +417,15 @@ class QdrantBackend:
             collection_name=self.collection_name,
             points_selector=PointIdsList(points=list(point_ids)),
         )
+
+    async def ping(self) -> None:
+        """Lightweight reachability check for readiness probes.
+
+        Deliberately bypasses the read retryer — a probe must reflect the
+        *current* state, not mask a transient blip behind retries. Raises
+        if Qdrant is unreachable.
+        """
+        await self.client.get_collections()
 
     async def close(self) -> None:
         await self.client.close()

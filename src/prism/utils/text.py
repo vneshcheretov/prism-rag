@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import re
+import string
 from functools import lru_cache
 
 import tiktoken
 
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?]) +|(?=\s*(?<!\d)(?<!\d[.?!])\d+\.\s)|(?<=\n)")
 _ENUM_HEAD_RE = re.compile(r"^[.!?]?\s*\d+\.")
+_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+
+
+def normalize_newlines(text: str) -> str:
+    r"""Turn literal ``\n`` escapes into real newlines — only when needed.
+
+    Catches the common mistake of pasting JSON-escaped text (one physical
+    line full of ``\n`` sequences) into a raw-text field, which would chunk
+    as a single line. Acts only when the text has **no** real newlines but
+    **does** contain ``\n`` escapes; properly formatted multi-line text is
+    left untouched, so a legitimate ``\n`` inside a code block is preserved.
+    """
+    if "\n" not in text and "\\n" in text:
+        return text.replace("\\n", "\n")
+    return text
+
+
+def normalize_simple(text: str) -> str:
+    """Lowercase and strip punctuation/digits for loose equality checks.
+
+    Used to decide whether an LLM-proposed heading is just a restatement of
+    an existing line (then we only prepend hashes) or genuinely new text.
+    """
+    text = text.lower().translate(_PUNCT_TABLE)
+    text = re.sub(r"\d+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @lru_cache(maxsize=4)

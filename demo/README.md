@@ -23,7 +23,8 @@ cp .env.example .env        # put your OPENAI_API_KEY here
 # script
 python demo/aiso_hotel_demo.py
 
-# or the notebook
+# or the notebook (jupyterlab is not a project dependency)
+pip install jupyterlab
 jupyter lab demo/aiso_hotel_demo.ipynb
 ```
 
@@ -41,5 +42,7 @@ jupyter lab demo/aiso_hotel_demo.ipynb
    only has a "мини-фитнес-зал", dense retrieval still finds it).
 3. **Answer** — `prism.answer()` synthesizes a direct reply with the qualifying
    details (the 5 kg pet weight limit, not just "yes").
-4. **Cross-language refusal** — an English query over the Russian corpus returns
+4. **Follow-up questions** — `ChatSession` keeps the dialogue log; the elliptical
+   "а с кошкой?" is resolved against the previous turn during query decomposition.
+5. **Cross-language refusal** — an English query over the Russian corpus returns
    a polite localized message instead of degraded retrieval.
