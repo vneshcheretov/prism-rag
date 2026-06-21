@@ -183,12 +183,23 @@ class Prism:
         prism.corpus_summary = meta_summary
         return prism
 
-    async def ingest(self, markdown: str, *, summarize: bool = True) -> list[PrismNode]:
+    async def ingest(self, markdown: str) -> list[PrismNode]:
         """Ingest a markdown document into the graph.
+
+        Pipeline: chunk by headers → LLM keypoint extraction per chunk →
+        embed and index into Qdrant → refresh the corpus summary.
 
         If ``language`` was not set at construction time, the language of
         the first ingested document is auto-detected (heuristic + optional
         LLM fallback) and locked in for the lifetime of the Prism instance.
+
+        The corpus summary is refreshed over **all** indexed nodes at the
+        end (one ``strong``-tier call). It is reused as DATA CONTEXT during
+        query decomposition, so synonyms reflect how this corpus actually
+        names things — and it is persisted so a restart can recover it.
+        On a multi-document corpus this means each ingest re-summarizes the
+        whole corpus, keeping the summary representative rather than
+        describing only the latest batch.
 
         Returns the list of newly created nodes. Chunks that fail LLM
         extraction after retries are skipped with a warning rather than
@@ -226,8 +237,7 @@ class Prism:
         log.info("ingest: indexing %d nodes", len(blueprints))
         nodes = await self.graph.add_nodes(blueprints)
 
-        if summarize:
-            await self._refresh_corpus_summary(blueprints)
+        await self._refresh_corpus_summary()
 
         # Persist engine-level state so a restarted process can recover the
         # corpus language and summary alongside the rehydrated graph.
@@ -277,10 +287,18 @@ class Prism:
                 delay *= 2
         return None
 
-    async def _refresh_corpus_summary(self, blueprints: list[NodeBlueprint]) -> None:
+    async def _refresh_corpus_summary(self) -> None:
+        """Rebuild the corpus summary over all indexed nodes.
+
+        Summarizing the whole graph (not just the latest ingest's nodes)
+        keeps the summary representative across multiple ingests.
+        """
         thumbnails = [
-            f"{bp.name}: " + ", ".join(bp.keypoints[:5]) for bp in blueprints
+            f"{node.name}: " + ", ".join(node.keypoints[:5])
+            for node in self.graph.nodes.values()
         ]
+        if not thumbnails:
+            return
         joined = "\n".join(thumbnails)
         try:
             result = await self.llm.complete_structured(
