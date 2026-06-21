@@ -67,7 +67,7 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/vadimscher/prism-rag"
+Repository = "https://github.com/vneshcheretov/prism-rag"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/prism"]

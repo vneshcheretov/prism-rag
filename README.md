@@ -77,7 +77,7 @@ flowchart LR
 ### 2. Install
 
 ```bash
-git clone https://github.com/vadimscher/prism-rag.git
+git clone https://github.com/vneshcheretov/prism-rag.git
 cd prism-rag
 pip install -e ".[sonar]"
 ```
