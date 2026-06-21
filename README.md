@@ -56,6 +56,9 @@ flowchart LR
 
 ## Quickstart
 
+> For a full step-by-step walkthrough (library, Docker, FastAPI, HTTP calls), see
+> [docs/getting-started.md](docs/getting-started.md).
+
 ### 1. Prerequisites
 
 - Python **3.11+**
