@@ -6,8 +6,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from ..embeddings.sonar import resolve_flores_code
-from ..llm.base import LLMProvider
-from ..llm.prompts import RELEVANCE_FILTER_PROMPT, build_prompts
+from ..llm.base import LLMProvider, Tier
+from ..llm.prompts import (
+    RELEVANCE_FILTER_PROMPT,
+    TRANSLATE_LIKE_PROMPT,
+    build_prompts,
+)
 from ..schemas.llm_outputs import (
     CorpusSummary,
     NodeExtraction,
@@ -15,7 +19,7 @@ from ..schemas.llm_outputs import (
     RelevanceFilter,
     Summarization,
 )
-from ..utils.language import detect_language, english_name, format_mismatch_message
+from ..utils.language import detect_language, english_name
 from ..utils.text import normalize_newlines
 from .chunker import Chunk, MarkdownChunker
 from .graph import PrismGraph
@@ -31,7 +35,6 @@ _HISTORY_MAX_MESSAGES = 12
 _EMPTY_QUERY = "empty query"
 _NON_SEARCHABLE = "query is not an information request"
 _NO_KEYPOINTS = "no searchable keypoints could be extracted"
-_LANGUAGE_MISMATCH = "language mismatch"
 
 
 class IngestError(RuntimeError):
@@ -53,6 +56,10 @@ class SearchResult:
     ``note`` is set when the pipeline short-circuited before retrieval
     (e.g. the query was empty or judged non-searchable) — in that case
     ``paragraphs`` is empty and ``note`` explains why.
+
+    ``translated`` is True when the query language differed from the corpus
+    (the decomposition emits keypoints in the corpus language either way);
+    ``paragraphs`` always stay in the corpus (document) language.
     """
 
     query: str
@@ -60,6 +67,7 @@ class SearchResult:
     paragraphs: list[str] = field(default_factory=list)
     nodes: list[PrismNode] = field(default_factory=list)
     note: str | None = None
+    translated: bool = False
 
     @property
     def text(self) -> str:
@@ -75,6 +83,10 @@ class AnswerResult:
 
     ``answer`` is empty when retrieval returned nothing or the
     summarization call failed — in that case ``note`` explains why.
+
+    ``answer`` is in the user's query language: when the query language
+    differs from the corpus, the synthesized answer is translated back.
+    ``translated`` mirrors the underlying search result.
     """
 
     query: str
@@ -82,6 +94,7 @@ class AnswerResult:
     final_summary: str = ""
     search: SearchResult | None = None
     note: str | None = None
+    translated: bool = False
 
 
 class Prism:
@@ -319,17 +332,11 @@ class Prism:
                 "ingest: corpus summarization failed: %s: %s", type(e).__name__, e
             )
 
-    def _language_mismatch_message(self, query_language: str | None) -> str | None:
-        """Return a localized hint when the query language differs from the corpus.
-
-        Returns ``None`` (no mismatch) when either side is unknown — we don't
-        block retrieval just because the caller didn't tag the query.
-        """
-        if not query_language or not self.language:
-            return None
-        if query_language == self.language:
-            return None
-        return format_mismatch_message(query_language, self.language)
+    async def _translate_like(self, reference: str, text: str, *, tier: Tier) -> str:
+        """Translate ``text`` into the language of ``reference`` (the query)."""
+        user = f"USER QUERY:\n{reference}\n\nANSWER:\n{text}"
+        out = await self.llm.complete_text(system=TRANSLATE_LIKE_PROMPT, user=user, tier=tier)
+        return out.strip() or text
 
     @staticmethod
     def _format_history(history: History | None) -> str:
@@ -362,16 +369,21 @@ class Prism:
         query: str,
         *,
         filter_relevance: bool = True,
-        query_language: str | None = None,
         history: History | None = None,
     ) -> SearchResult:
         """Retrieve relevant paragraphs for a natural-language query.
 
+        Cross-lingual: the query decomposition (a call we make anyway)
+        reports the query's language and emits keypoints in the corpus
+        language, so a foreign query retrieves correctly without a separate
+        translation step. Retrieved ``paragraphs`` are returned verbatim in
+        the corpus/document language; ``translated`` is True when the query
+        language differed from the corpus.
+
         ``history`` enables follow-up questions: pass the recent chat
         messages in OpenAI format (``{"role": "user" | "assistant",
         "content": ...}``) and the query decomposition resolves
-        pronouns/ellipsis against them ("а с кошкой?" after a question
-        about dogs). Retrieval itself stays stateless.
+        pronouns/ellipsis against them. Retrieval itself stays stateless.
         """
         q = query.strip() if query else ""
         if not q:
@@ -379,19 +391,21 @@ class Prism:
 
         log.info("search: query=%r", q)
 
-        mismatch = self._language_mismatch_message(query_language)
-        if mismatch:
-            return SearchResult(query=query, note=mismatch)
-
         try:
             kp = await self._extract_query_keypoints(q, history)
         except Exception as e:
             log.error("search: keypoint extraction failed: %s: %s", type(e).__name__, e)
             return SearchResult(query=query, note=f"keypoint extraction error: {e}")
 
+        translated = bool(self.language and kp.language and kp.language != self.language)
+        if translated:
+            log.info("search: cross-lingual query (%s -> %s)", kp.language, self.language)
+
         if not kp.is_searchable:
             log.info("search: non-searchable input, skipping retrieval")
-            return SearchResult(query=query, note=_NON_SEARCHABLE)
+            return SearchResult(
+                query=query, note=_NON_SEARCHABLE, translated=translated
+            )
 
         keypoints = list(
             dict.fromkeys(
@@ -399,7 +413,9 @@ class Prism:
             )
         )
         if not keypoints:
-            return SearchResult(query=query, note=_NO_KEYPOINTS)
+            return SearchResult(
+                query=query, note=_NO_KEYPOINTS, translated=translated
+            )
 
         log.info("search: keypoints=%s", keypoints)
 
@@ -421,6 +437,7 @@ class Prism:
             keypoints=keypoints,
             paragraphs=paragraphs,
             nodes=nodes,
+            translated=translated,
         )
 
     async def answer(
@@ -428,37 +445,22 @@ class Prism:
         query: str,
         *,
         filter_relevance: bool = True,
-        query_language: str | None = None,
         history: History | None = None,
     ) -> AnswerResult:
         """End-to-end: retrieve relevant fragments and synthesize an answer.
 
-        Thin opt-in wrapper over :py:meth:`search` plus a single LLM call
-        that grounds the answer in the retrieved fragments. Returns the
-        underlying ``SearchResult`` on ``AnswerResult.search`` so callers
-        can still show citations or fall back to raw fragments.
+        Thin wrapper over :py:meth:`search` plus a grounding LLM call.
+        Returns the underlying ``SearchResult`` on ``AnswerResult.search``
+        so callers can still show citations or fall back to raw fragments.
 
-        When ``query_language`` is given and differs from the corpus
-        language, returns immediately with a localized message in the
-        query language explaining the mismatch — no retrieval, no LLM
-        calls. Use this to politely refuse cross-language queries.
-
-        Short-circuits without calling the summarization LLM when
-        retrieval yielded nothing — the ``note`` on the search result is
-        propagated.
+        Cross-lingual: when the query language differs from the corpus, the
+        answer is synthesized in the corpus language and then translated back
+        to the user's language. Short-circuits without summarizing when
+        retrieval yielded nothing — the ``note`` is propagated.
         """
-        mismatch = self._language_mismatch_message(query_language)
-        if mismatch:
-            return AnswerResult(
-                query=query,
-                answer=mismatch,
-                note=_LANGUAGE_MISMATCH,
-            )
-
         search = await self.search(
             query,
             filter_relevance=filter_relevance,
-            query_language=query_language,
             history=history,
         )
 
@@ -467,6 +469,7 @@ class Prism:
                 query=query,
                 search=search,
                 note=search.note or "no relevant fragments retrieved",
+                translated=search.translated,
             )
 
         joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
@@ -487,13 +490,20 @@ class Prism:
                 query=query,
                 search=search,
                 note=f"summarization error: {e}",
+                translated=search.translated,
             )
+
+        answer_text = result.summary
+        if search.translated:
+            answer_text = await self._translate_like(query, answer_text, tier="strong")
+            log.info("answer: translated answer back to the query language")
 
         return AnswerResult(
             query=query,
-            answer=result.summary,
+            answer=answer_text,
             final_summary=result.final_summary,
             search=search,
+            translated=search.translated,
         )
 
     async def _extract_query_keypoints(

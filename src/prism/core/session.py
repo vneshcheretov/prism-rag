@@ -32,18 +32,16 @@ class ChatSession:
         query: str,
         *,
         filter_relevance: bool = True,
-        query_language: str | None = None,
     ) -> AnswerResult:
         """Answer ``query`` in the context of this session's history.
 
         The user message is always recorded; the assistant message only
         when an answer was actually produced — short-circuited turns
-        (chit-chat, language mismatch) leave no empty replies behind.
+        (chit-chat, non-searchable input) leave no empty replies behind.
         """
         result = await self.prism.answer(
             query,
             filter_relevance=filter_relevance,
-            query_language=query_language,
             history=self.messages,
         )
         self.messages.append({"role": "user", "content": query})

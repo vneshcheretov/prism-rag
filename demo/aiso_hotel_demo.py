@@ -129,11 +129,13 @@ async def main() -> None:
             print(f"Q: {q}")
             print(f"A: {res.answer or res.note}")
 
-        # Cross-language: ask in English over a Russian corpus.
+        # Cross-language: ask in English over a Russian corpus. The query is
+        # auto-translated to Russian for retrieval, and the answer is
+        # translated back to English.
         print("\n=== CROSS-LANGUAGE (en query, ru corpus) ===")
-        en = await prism.answer("can I bring my dog?", query_language="en")
-        print(f"answer: {en.answer}")
-        print(f"note:   {en.note}")
+        en = await prism.answer("can I bring my dog?")
+        print(f"answer:     {en.answer}")
+        print(f"translated: {en.translated}")
     finally:
         await qdrant.client.close()
 

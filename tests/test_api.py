@@ -59,6 +59,7 @@ class FakeLLM:
             )
         if schema is QueryKeypoints:
             return QueryKeypoints(
+                language="en",
                 is_searchable=True,
                 short_summary="pet policy",
                 key_phrases=["pets"],

@@ -32,7 +32,11 @@ class StubLLM:
     ) -> T:
         self.calls.append((system, user))
         return schema(
-            is_searchable=False, short_summary="x", key_phrases=[], synonyms=[]
+            language="en",
+            is_searchable=False,
+            short_summary="x",
+            key_phrases=[],
+            synonyms=[],
         )
 
     async def complete_text(
@@ -41,11 +45,23 @@ class StubLLM:
         return "en"
 
 
-def _prism(llm: StubLLM) -> Prism:
+def _prism(llm: StubLLM, *, language: str | None = None) -> Prism:
     qdrant = QdrantBackend(
         AsyncQdrantClient(location=":memory:"), collection_name="test"
     )
-    return Prism(PrismGraph(qdrant, FakeEmbedder()), llm)
+    return Prism(PrismGraph(qdrant, FakeEmbedder()), llm, language=language)
+
+
+async def test_search_flags_translated_when_query_language_differs():
+    # corpus ru, decomposition reports query language en -> translated
+    res = await _prism(StubLLM(), language="ru").search("can I bring my dog?")
+    assert res.translated is True
+
+
+async def test_search_not_translated_when_no_corpus_language():
+    # no corpus language locked yet -> never flagged as translated
+    res = await _prism(StubLLM()).search("can I bring my dog?")
+    assert res.translated is False
 
 
 async def test_ingest_blank_input_raises_before_locking_language():

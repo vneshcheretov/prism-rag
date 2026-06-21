@@ -184,7 +184,6 @@ async def convert_structured(
 async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> SearchResponse:
     result = await prism.search(
         req.query,
-        query_language=req.query_language,
         history=[m.model_dump() for m in req.history],
     )
     return SearchResponse(
@@ -192,6 +191,7 @@ async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> Searc
         keypoints=result.keypoints,
         paragraphs=result.paragraphs,
         note=result.note,
+        translated=result.translated,
     )
 
 
@@ -199,7 +199,6 @@ async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> Searc
 async def answer(req: AnswerRequest, prism: Prism = Depends(get_prism)) -> AnswerResponse:
     result = await prism.answer(
         req.query,
-        query_language=req.query_language,
         history=[m.model_dump() for m in req.history],
     )
     search_out = None
@@ -209,6 +208,7 @@ async def answer(req: AnswerRequest, prism: Prism = Depends(get_prism)) -> Answe
             keypoints=result.search.keypoints,
             paragraphs=result.search.paragraphs,
             note=result.search.note,
+            translated=result.search.translated,
         )
     return AnswerResponse(
         query=result.query,
@@ -216,4 +216,5 @@ async def answer(req: AnswerRequest, prism: Prism = Depends(get_prism)) -> Answe
         final_summary=result.final_summary,
         note=result.note,
         search=search_out,
+        translated=result.translated,
     )

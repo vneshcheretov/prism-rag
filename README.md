@@ -148,12 +148,13 @@ keypoints: ['время заезда', 'время выезда', 'время ch
   [1] Время заезда: с 14:00 Время выезда: до 12:00
 ```
 
-A query in the wrong language gets a polite localized refusal instead of garbage:
+A query in another language is auto-translated to the corpus language for retrieval, and the
+answer is translated back — so you can query a Russian corpus in English:
 
 ```
 QUERY: can I bring my dog?
-answer: The corpus is available in Русский only. Please ask your question in this language.
-note:   language mismatch
+answer:     Yes, pets up to 5 kg are allowed.
+translated: True
 ```
 
 ## Usage
@@ -222,8 +223,11 @@ The pipeline short-circuits cheaply and explains itself via `note`:
 |---|---|
 | `""` | `empty query` — zero LLM calls |
 | `"hi there"` | `query is not an information request` — one cheap LLM call, no retrieval |
-| Query in a language other than the corpus | `language mismatch` — localized refusal in `answer` |
 | Question the corpus can't answer | `no relevant fragments retrieved` |
+
+A query in a different language is **translated** (not refused): the query decomposition
+detects the language and emits keypoints in the corpus language for retrieval, the answer is
+translated back to the user's language, and `translated: true` flags it on the result.
 
 ### Bring your own embedder
 
@@ -346,7 +350,7 @@ python -m prism.api
 | `POST /ingest/markdown` | raw markdown in the request body (`text/markdown`) | indexed nodes, detected language, corpus summary |
 | `POST /convert/file` | multipart `file` (PDF, DOCX, HTML, ...) | `{"markdown", "title"}` — convert only (then send to `/ingest/markdown`); needs the `convert` extra |
 | `POST /convert/structured` | multipart `file` | same, plus an LLM pass that infers `#` headings — for sources with no usable structure |
-| `POST /search` | `{"query": "...", "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
+| `POST /search` | `{"query": "...", "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
 | `GET /ready` | — | readiness: `200 {"status": "ready", "nodes": N}` if Qdrant is reachable, else `503` |
