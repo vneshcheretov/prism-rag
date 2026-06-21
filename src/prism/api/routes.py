@@ -184,7 +184,6 @@ async def convert_structured(
 async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> SearchResponse:
     result = await prism.search(
         req.query,
-        filter_relevance=req.filter_relevance,
         query_language=req.query_language,
         history=[m.model_dump() for m in req.history],
     )
@@ -200,7 +199,6 @@ async def search(req: SearchRequest, prism: Prism = Depends(get_prism)) -> Searc
 async def answer(req: AnswerRequest, prism: Prism = Depends(get_prism)) -> AnswerResponse:
     result = await prism.answer(
         req.query,
-        filter_relevance=req.filter_relevance,
         query_language=req.query_language,
         history=[m.model_dump() for m in req.history],
     )

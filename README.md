@@ -346,7 +346,7 @@ python -m prism.api
 | `POST /ingest/markdown` | raw markdown in the request body (`text/markdown`) | indexed nodes, detected language, corpus summary |
 | `POST /convert/file` | multipart `file` (PDF, DOCX, HTML, ...) | `{"markdown", "title"}` — convert only (then send to `/ingest/markdown`); needs the `convert` extra |
 | `POST /convert/structured` | multipart `file` | same, plus an LLM pass that infers `#` headings — for sources with no usable structure |
-| `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
+| `POST /search` | `{"query": "...", "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
 | `GET /ready` | — | readiness: `200 {"status": "ready", "nodes": N}` if Qdrant is reachable, else `503` |

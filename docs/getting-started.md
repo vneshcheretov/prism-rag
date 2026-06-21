@@ -210,7 +210,7 @@ cases instead return `200` with a `note` explaining why the result is empty.
 | `POST /ingest/markdown` | raw markdown in the body (`text/markdown`) | indexed nodes, language, corpus summary |
 | `POST /convert/file` | multipart `file` (PDF, DOCX, ...) | `{"markdown": "...", "title": "..."}` — convert only, then ingest |
 | `POST /convert/structured` | multipart `file` | same, plus LLM-inferred `#` headings (for unstructured sources) |
-| `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + paragraphs |
+| `POST /search` | `{"query": "...", "query_language": null, "history": []}` | keypoints + paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness |
 | `GET /ready` | — | readiness (Qdrant reachable) |

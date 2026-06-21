@@ -32,7 +32,6 @@ class IngestResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    filter_relevance: bool = True
     query_language: str | None = None
     history: list[ChatMessage] = Field(
         default_factory=list,
@@ -49,7 +48,6 @@ class SearchResponse(BaseModel):
 
 class AnswerRequest(BaseModel):
     query: str
-    filter_relevance: bool = True
     query_language: str | None = None
     history: list[ChatMessage] = Field(
         default_factory=list,
