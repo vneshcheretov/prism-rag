@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .. import __version__
 from ..core.engine import Prism
 from ..core.structuring import MarkdownStructurer
+from ..utils.text import normalize_newlines
 from .dependencies import get_prism
 from .schemas import (
     AnswerRequest,
@@ -126,7 +127,7 @@ async def _convert_to_markdown(file: UploadFile) -> tuple[str, str | None] | JSO
             status_code=422,
             content={"error": "conversion_failed", "detail": "could not convert the file"},
         )
-    return result.markdown, result.title
+    return normalize_newlines(result.markdown), result.title
 
 
 @router.post("/convert/file", response_model=ConvertResponse)

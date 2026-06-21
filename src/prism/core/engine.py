@@ -16,6 +16,7 @@ from ..schemas.llm_outputs import (
     Summarization,
 )
 from ..utils.language import detect_language, english_name, format_mismatch_message
+from ..utils.text import normalize_newlines
 from .chunker import Chunk, MarkdownChunker
 from .graph import PrismGraph
 from .node import NodeBlueprint, PrismNode
@@ -210,7 +211,11 @@ class Prism:
         no indexable content (so the contract is "nodes or error", never a
         silent empty result). The empty check runs *before* language
         detection so a blank document never locks in the corpus language.
+
+        Literal ``\\n`` escapes in single-line input (a common paste mistake)
+        are turned into real newlines first — see :func:`normalize_newlines`.
         """
+        markdown = normalize_newlines(markdown)
         if not markdown.strip():
             log.warning("ingest: empty input, nothing to ingest")
             raise IngestError("ingest: empty input")

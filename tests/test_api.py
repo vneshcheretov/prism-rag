@@ -314,6 +314,22 @@ def _client_for(prism) -> AsyncClient:
     )
 
 
+async def test_ingest_escaped_newlines_are_normalized():
+    # one physical line with literal \n escapes (a common paste mistake) —
+    # would chunk as a single header-only line, but normalization fixes it
+    escaped = (
+        "# Hotel Handbook\\n\\n## Pets\\n\\n"
+        "Pets up to five kilograms are allowed in all rooms; "
+        "please notify reception in advance."
+    )
+    async with await _build_client() as client:
+        resp = await client.post(
+            "/ingest/markdown", content=escaped, headers={"content-type": "text/markdown"}
+        )
+    assert resp.status_code == 200
+    assert len(resp.json()["nodes"]) >= 1
+
+
 async def test_ingest_empty_returns_422():
     async with await _build_client() as client:
         resp = await client.post(

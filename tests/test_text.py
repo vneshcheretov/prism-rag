@@ -1,4 +1,4 @@
-from prism.utils.text import count_tokens, sentence_tokenize
+from prism.utils.text import count_tokens, normalize_newlines, sentence_tokenize
 
 
 def test_count_tokens_basic():
@@ -8,6 +8,21 @@ def test_count_tokens_basic():
 
 def test_count_tokens_longer_text_has_more_tokens():
     assert count_tokens("hello world from a test") > count_tokens("hi")
+
+
+def test_normalize_newlines_unescapes_single_line():
+    # one physical line full of \n escapes -> real newlines
+    assert normalize_newlines("# A\\n\\ntext\\n## B") == "# A\n\ntext\n## B"
+
+
+def test_normalize_newlines_leaves_real_multiline_untouched():
+    # already has real newlines -> a literal \n (e.g. in code) is preserved
+    text = '# Title\n\nExample: `"a\\nb"`'
+    assert normalize_newlines(text) == text
+
+
+def test_normalize_newlines_noop_without_escapes():
+    assert normalize_newlines("# Title\n\nplain text") == "# Title\n\nplain text"
 
 
 def test_sentence_tokenize_simple_english():
