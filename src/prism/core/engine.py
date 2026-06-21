@@ -464,15 +464,22 @@ class Prism:
             history=history,
         )
 
-        if not search.paragraphs:
+        # A short-circuited search (empty/non-searchable/error) carries a note —
+        # propagate it without an LLM call. A searchable query that simply found
+        # nothing (note is None) still goes to summarization: the prompt replies
+        # that the data has no answer rather than returning an empty string.
+        if not search.paragraphs and search.note is not None:
             return AnswerResult(
                 query=query,
                 search=search,
-                note=search.note or "no relevant fragments retrieved",
+                note=search.note,
                 translated=search.translated,
             )
 
-        joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
+        if search.paragraphs:
+            joined = "\n\n".join(f"- {p}" for p in search.paragraphs)
+        else:
+            joined = "(no relevant data found)"
         hist = self._format_history(history)
         hist_block = f"{hist}\n\n" if hist else ""
         user_msg = f"REQUEST:\n{query}\n\n{hist_block}DATA FRAGMENTS:\n{joined}"
@@ -503,6 +510,9 @@ class Prism:
             answer=answer_text,
             final_summary=result.final_summary,
             search=search,
+            # still flag "nothing retrieved" for callers even though `answer`
+            # now carries a polite not-found message instead of being empty.
+            note=None if search.paragraphs else "no relevant fragments retrieved",
             translated=search.translated,
         )
 

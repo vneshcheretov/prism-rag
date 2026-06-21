@@ -7,6 +7,7 @@ from qdrant_client import AsyncQdrantClient
 
 from prism import ChatSession, Embedder, IngestError, Prism, PrismGraph, QdrantBackend
 from prism.core.engine import _NON_SEARCHABLE
+from prism.schemas.llm_outputs import QueryKeypoints, Summarization
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -62,6 +63,40 @@ async def test_search_not_translated_when_no_corpus_language():
     # no corpus language locked yet -> never flagged as translated
     res = await _prism(StubLLM()).search("can I bring my dog?")
     assert res.translated is False
+
+
+class NoInfoLLM:
+    """Searchable query, but retrieval finds nothing — summarization replies
+    that the data has no answer."""
+
+    async def complete_structured(self, system, user, schema, *, tier="fast"):
+        if schema is QueryKeypoints:
+            return QueryKeypoints(
+                language="en",
+                is_searchable=True,
+                short_summary="pool",
+                key_phrases=["pool"],
+                synonyms=["pool"],
+            )
+        if schema is Summarization:
+            return Summarization(
+                summary="The available data has no information on this.",
+                final_summary="Data about: none",
+            )
+        raise AssertionError(f"unexpected schema {schema}")
+
+    async def complete_text(self, system, user, *, tier="fast"):
+        return "en"
+
+
+async def test_answer_returns_message_when_no_data_found():
+    qdrant = QdrantBackend(AsyncQdrantClient(location=":memory:"), collection_name="t")
+    graph = await PrismGraph.create(qdrant, FakeEmbedder(), recreate=True)
+    prism = Prism(graph, NoInfoLLM(), language="en")  # empty graph -> no hits
+
+    ans = await prism.answer("is there a swimming pool?")
+    assert ans.answer == "The available data has no information on this."
+    assert ans.note == "no relevant fragments retrieved"
 
 
 async def test_ingest_blank_input_raises_before_locking_language():

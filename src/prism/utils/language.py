@@ -11,10 +11,10 @@ Two-stage detection cascade by design:
 A non-empty ``fallback`` ISO code (default ``"en"``) is returned when both
 stages fail to produce anything — callers always get a usable code.
 
-For cross-language queries (user asks in language X about a corpus indexed
-in language Y), ``format_mismatch_message`` produces a localized message in
-the *query* language explaining that the corpus is in language Y, so the
-user can actually read the explanation.
+Used to detect the corpus language at ingest time (long text → the
+heuristic is reliable). Query-language handling lives in the engine's
+decomposition step instead, where the LLM reports the query language as
+part of the call it already makes.
 """
 from __future__ import annotations
 

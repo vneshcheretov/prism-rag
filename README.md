@@ -223,7 +223,7 @@ The pipeline short-circuits cheaply and explains itself via `note`:
 |---|---|
 | `""` | `empty query` — zero LLM calls |
 | `"hi there"` | `query is not an information request` — one cheap LLM call, no retrieval |
-| Question the corpus can't answer | `no relevant fragments retrieved` |
+| Question the corpus can't answer | `no relevant fragments retrieved` — `answer` carries a polite "not in the data" reply (in the user's language) |
 
 A query in a different language is **translated** (not refused): the query decomposition
 detects the language and emits keypoints in the corpus language for retrieval, the answer is
