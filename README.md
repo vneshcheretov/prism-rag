@@ -345,6 +345,7 @@ python -m prism.api
 |---|---|---|
 | `POST /ingest/markdown` | raw markdown in the request body (`text/markdown`) | indexed nodes, detected language, corpus summary |
 | `POST /convert/file` | multipart `file` (PDF, DOCX, HTML, ...) | `{"markdown", "title"}` — convert only (then send to `/ingest/markdown`); needs the `convert` extra |
+| `POST /convert/structured` | multipart `file` | same, plus an LLM pass that infers `#` headings — for sources with no usable structure |
 | `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
@@ -355,7 +356,8 @@ to a readiness probe (pulls the instance out of rotation while Qdrant is unreach
 
 `/convert/file` turns PDF/DOCX/PPTX/XLSX/HTML/... into markdown (via markitdown) — but it
 only emits `#` headings when the source carries real heading styles; PDFs and bold-faked
-headings convert to flat text. Review (and structure) the result before sending it to
+headings convert to flat text. When the source has no usable structure, `/convert/structured`
+adds an LLM pass that infers headings. Review the result before sending it to
 `/ingest/markdown`.
 
 Follow-up questions work over HTTP too — the service is stateless (like the OpenAI API),

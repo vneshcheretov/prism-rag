@@ -155,10 +155,13 @@ curl -s localhost:8000/ingest/markdown -H 'content-type: text/markdown' \
   --data-binary $'# Hotel\n\n## Pets\n\nPets up to 5 kg are allowed.'
 
 # convert a non-markdown file to markdown — conversion only
-# supported: PDF, DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, EPUB, ZIP, text
+# supported: PDF, DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, EPUB, ZIP
 # NOTE: `#` headings appear only if the source has real heading styles;
 #       PDFs and bold-faked headings convert to flat text — review before ingesting.
 curl -s localhost:8000/convert/file -F file=@handbook.pdf   # -> {"markdown": "...", "title": "..."}
+
+# no usable structure in the source? let an LLM infer headings (heavier)
+curl -s localhost:8000/convert/structured -F file=@handbook.pdf
 
 # typical flow: convert a file, then ingest the returned markdown
 md=$(curl -s localhost:8000/convert/file -F file=@handbook.pdf | jq -r .markdown)
@@ -206,6 +209,7 @@ cases instead return `200` with a `note` explaining why the result is empty.
 |---|---|---|
 | `POST /ingest/markdown` | raw markdown in the body (`text/markdown`) | indexed nodes, language, corpus summary |
 | `POST /convert/file` | multipart `file` (PDF, DOCX, ...) | `{"markdown": "...", "title": "..."}` — convert only, then ingest |
+| `POST /convert/structured` | multipart `file` | same, plus LLM-inferred `#` headings (for unstructured sources) |
 | `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness |

@@ -319,3 +319,55 @@ def build_prompts(language: str) -> dict[str, str]:
         "summarization": SUMMARIZATION_PROMPT.replace("{language}", language),
         "corpus_summary": CORPUS_SUMMARY_PROMPT.replace("{language}", language),
     }
+
+
+# Markdown-structuring prompts: an LLM infers heading structure for flat text
+# with no markdown headers (e.g. extracted from a PDF). The text is fed in
+# numbered-sentence chunks; the model returns headings keyed by line number,
+# wrapped in a ```markdown ...``` fence.
+MD_HEADERS_START_PROMPT = """\
+You will receive a text fragment called CHUNK.
+Your task is to analyze it and logically divide it into semantic sections.
+
+For each section:
+- Identify where a new logical part of the text begins.
+- Add a heading that reflects the essence of the following fragment.
+- Use Markdown-style headings (#, ##, ###, etc.) based on the topic hierarchy and depth.
+- The headings must be meaningful, relevant to the content, and not too granular — avoid creating very short subsections unless clearly justified.
+- Each heading should begin with the corresponding line number, the proper number of hash symbols and the section title and necessarily from the new line.
+- You may use exact phrases from the text or create a heading that summarizes the idea clearly.
+- Please pay close attention to the line numbers and make sure not to mix them up.
+
+Output format:
+Provide the line number where the new section starts, followed by the Markdown-formatted heading.
+
+Example output:
+```markdown
+1) # Section one
+6) # Section two
+7) ## Subsection
+10) ## Another subsection
+```"""
+
+
+MD_HEADERS_CONTINUE_PROMPT = """\
+You will receive a text fragment called CHUNK and a list of headings created for the previous part of the text.
+Your task is to analyze this new CHUNK and logically extend the heading structure, continuing the division into meaningful semantic sections.
+
+What you need to do:
+- Analyze the CHUNK and identify where new logical sections should begin.
+- For each new section, add an appropriate heading that reflects the meaning of the following passage.
+- Continue the structure of headings based on the previously provided list, maintaining the correct hierarchy (#, ##, ###, etc.).
+- The headings must be logical, meaningful, and not too granular — avoid creating very short or unnecessary sub-sections.
+- Each heading should begin with the corresponding line number, the proper number of hash symbols and the section title and necessarily from the new line.
+- You may use exact phrases from the text or create a heading that summarizes the idea clearly.
+- Please pay close attention to the line numbers and make sure not to mix them up.
+
+Output format:
+Specify the line number where the new heading should be inserted and the Markdown-formatted heading itself.
+Example:
+```markdown
+21) ## Services
+26) ### Laundry
+30) ### Transfer
+```"""

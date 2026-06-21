@@ -174,6 +174,20 @@ async def test_convert_file_returns_markdown():
     assert body["title"] == "Doc"
 
 
+async def test_convert_structured_adds_headings():
+    class StructuringLLM(FakeLLM):
+        async def complete_text(self, system, user, *, tier="fast"):
+            return "```markdown\n1) # Structured\n```"
+
+    html = b"<html><body><p>Hotel overview here. Pets allowed.</p></body></html>"
+    async with await _build_client_with(StructuringLLM()) as client:
+        resp = await client.post(
+            "/convert/structured", files={"file": ("doc.html", html, "text/html")}
+        )
+    assert resp.status_code == 200
+    assert "# Structured" in resp.json()["markdown"]
+
+
 async def test_convert_file_failure_returns_422(monkeypatch):
     import markitdown
 

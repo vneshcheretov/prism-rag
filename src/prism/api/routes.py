@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .. import __version__
 from ..core.engine import Prism
+from ..core.structuring import MarkdownStructurer
 from .dependencies import get_prism
 from .schemas import (
     AnswerRequest,
@@ -98,26 +99,11 @@ async def ingest_markdown(
     )
 
 
-@router.post("/convert/file", response_model=ConvertResponse)
-async def convert_file(file: UploadFile) -> ConvertResponse | JSONResponse:
-    """Convert an uploaded document to markdown (conversion only).
+async def _convert_to_markdown(file: UploadFile) -> tuple[str, str | None] | JSONResponse:
+    """Convert an uploaded file to markdown via markitdown.
 
-    Supported inputs (via markitdown): PDF, Word (.docx), PowerPoint
-    (.pptx), Excel (.xlsx/.xls), HTML, CSV, JSON, XML, EPUB, ZIP.
-
-    **Heading structure caveat:** markdown headings (`#`) are produced only
-    when the source file carries real heading formatting — e.g. Word
-    "Heading 1/2/3" paragraph styles. PDFs (which have no heading
-    semantics) and documents that fake headings with bold text convert to
-    flat markdown without `#`. Since Prism chunks by headers, a flat result
-    yields a single coarse section. If you are unsure about the source's
-    structure, use the upcoming ``/convert/structured`` endpoint (LLM-
-    assisted heading inference) — not yet implemented.
-
-    The returned markdown is meant to be reviewed (and structured if
-    needed) before being sent to ``/ingest/markdown``. Independent of the
-    engine, so it works even when Qdrant is down. Requires the ``convert``
-    extra (markitdown).
+    Returns ``(markdown, title)`` or a ``JSONResponse`` error (503 when the
+    ``convert`` extra is missing, 422 when conversion fails).
     """
     try:
         from markitdown import MarkItDown
@@ -140,7 +126,52 @@ async def convert_file(file: UploadFile) -> ConvertResponse | JSONResponse:
             status_code=422,
             content={"error": "conversion_failed", "detail": "could not convert the file"},
         )
-    return ConvertResponse(markdown=result.markdown, title=result.title)
+    return result.markdown, result.title
+
+
+@router.post("/convert/file", response_model=ConvertResponse)
+async def convert_file(file: UploadFile) -> ConvertResponse | JSONResponse:
+    """Convert an uploaded document to markdown (conversion only).
+
+    Supported inputs (via markitdown): PDF, Word (.docx), PowerPoint
+    (.pptx), Excel (.xlsx/.xls), HTML, CSV, JSON, XML, EPUB, ZIP.
+
+    **Heading structure caveat:** markdown headings (`#`) are produced only
+    when the source file carries real heading formatting — e.g. Word
+    "Heading 1/2/3" paragraph styles. PDFs (which have no heading
+    semantics) and documents that fake headings with bold text convert to
+    flat markdown without `#`. Since Prism chunks by headers, a flat result
+    yields a single coarse section. If you are unsure about the source's
+    structure, use ``/convert/structured`` (LLM-assisted heading inference).
+
+    The returned markdown is meant to be reviewed before being sent to
+    ``/ingest/markdown``. Independent of the engine, so it works even when
+    Qdrant is down. Requires the ``convert`` extra (markitdown).
+    """
+    out = await _convert_to_markdown(file)
+    if isinstance(out, JSONResponse):
+        return out
+    markdown, title = out
+    return ConvertResponse(markdown=markdown, title=title)
+
+
+@router.post("/convert/structured", response_model=ConvertResponse)
+async def convert_structured(
+    file: UploadFile, prism: Prism = Depends(get_prism)
+) -> ConvertResponse | JSONResponse:
+    """Convert a document to markdown **and** infer heading structure via an LLM.
+
+    Same conversion as ``/convert/file``, plus an extra LLM pass that adds
+    markdown headings — for sources with no usable structure (PDFs, docs
+    that fake headings with bold text). Heavier (one LLM call per ~70
+    sentences); needs both the ``convert`` extra and a configured LLM.
+    """
+    out = await _convert_to_markdown(file)
+    if isinstance(out, JSONResponse):
+        return out
+    markdown, title = out
+    structured = await MarkdownStructurer(prism.llm).structure(markdown)
+    return ConvertResponse(markdown=structured, title=title)
 
 
 @router.post("/search", response_model=SearchResponse)
