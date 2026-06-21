@@ -94,6 +94,15 @@ async def _build_client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def test_root_banner():
+    async with await _build_client() as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service"] == "prism"
+    assert body["docs"] == "/docs"
+
+
 async def test_health():
     async with await _build_client() as client:
         resp = await client.get("/health")
@@ -124,7 +133,9 @@ async def test_ready_returns_503_when_qdrant_down():
 
 async def test_ingest_search_answer_flow():
     async with await _build_client() as client:
-        ingest_resp = await client.post("/ingest", json={"markdown": MARKDOWN})
+        ingest_resp = await client.post(
+            "/ingest/markdown", content=MARKDOWN, headers={"content-type": "text/markdown"}
+        )
         assert ingest_resp.status_code == 200
         ingest_body = ingest_resp.json()
         assert ingest_body["language"] == "en"
@@ -146,6 +157,37 @@ async def test_ingest_search_answer_flow():
         assert answer_body["search"]["paragraphs"] == [
             "Pets up to 5 kg are allowed in all rooms."
         ]
+
+
+async def test_convert_file_returns_markdown():
+    html = (
+        b"<html><head><title>Doc</title></head>"
+        b"<body><h1>Hotel</h1><p>Pets up to 5 kg allowed.</p></body></html>"
+    )
+    async with await _build_client() as client:
+        resp = await client.post(
+            "/convert/file", files={"file": ("doc.html", html, "text/html")}
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "# Hotel" in body["markdown"]
+    assert body["title"] == "Doc"
+
+
+async def test_convert_file_failure_returns_422(monkeypatch):
+    import markitdown
+
+    class BoomMD:
+        def convert_stream(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(markitdown, "MarkItDown", BoomMD)
+    async with await _build_client() as client:
+        resp = await client.post(
+            "/convert/file", files={"file": ("doc.html", b"<h1>x</h1>", "text/html")}
+        )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "conversion_failed"
 
 
 async def test_search_empty_query_returns_note():
@@ -254,7 +296,9 @@ def _client_for(prism) -> AsyncClient:
 
 async def test_ingest_empty_returns_422():
     async with await _build_client() as client:
-        resp = await client.post("/ingest", json={"markdown": "   "})
+        resp = await client.post(
+            "/ingest/markdown", content="   ", headers={"content-type": "text/markdown"}
+        )
     assert resp.status_code == 422
     assert resp.json()["error"] == "ingest_failed"
 
@@ -270,7 +314,9 @@ async def test_ingest_failure_returns_422():
         chunk_max_retries=1,
     )
     async with _client_for(prism) as client:
-        resp = await client.post("/ingest", json={"markdown": MARKDOWN})
+        resp = await client.post(
+            "/ingest/markdown", content=MARKDOWN, headers={"content-type": "text/markdown"}
+        )
     assert resp.status_code == 422
     assert resp.json()["error"] == "ingest_failed"
 

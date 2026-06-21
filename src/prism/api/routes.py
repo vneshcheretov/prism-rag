@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from .. import __version__
 from ..core.engine import Prism
 from .dependencies import get_prism
 from .schemas import (
     AnswerRequest,
     AnswerResponse,
+    ConvertResponse,
     IngestedNode,
-    IngestRequest,
     IngestResponse,
     SearchRequest,
     SearchResponse,
@@ -20,6 +23,17 @@ from .schemas import (
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/")
+async def root() -> dict[str, str]:
+    """Service banner — so hitting the base URL isn't a bare 404."""
+    return {
+        "service": "prism",
+        "version": __version__,
+        "docs": "/docs",
+        "health": "/health",
+    }
 
 
 @router.get("/health")
@@ -59,9 +73,16 @@ async def ready(request: Request) -> JSONResponse:
     )
 
 
-@router.post("/ingest", response_model=IngestResponse)
-async def ingest(req: IngestRequest, prism: Prism = Depends(get_prism)) -> IngestResponse:
-    nodes = await prism.ingest(req.markdown, summarize=req.summarize)
+@router.post("/ingest/markdown", response_model=IngestResponse)
+async def ingest_markdown(
+    markdown: str = Body(
+        ...,
+        media_type="text/markdown",
+        description="Markdown document to ingest — sent as the raw request body.",
+    ),
+    prism: Prism = Depends(get_prism),
+) -> IngestResponse:
+    nodes = await prism.ingest(markdown)
     return IngestResponse(
         language=prism.language,
         nodes=[
@@ -75,6 +96,51 @@ async def ingest(req: IngestRequest, prism: Prism = Depends(get_prism)) -> Inges
         ],
         corpus_summary=prism.corpus_summary,
     )
+
+
+@router.post("/convert/file", response_model=ConvertResponse)
+async def convert_file(file: UploadFile) -> ConvertResponse | JSONResponse:
+    """Convert an uploaded document to markdown (conversion only).
+
+    Supported inputs (via markitdown): PDF, Word (.docx), PowerPoint
+    (.pptx), Excel (.xlsx/.xls), HTML, CSV, JSON, XML, EPUB, ZIP.
+
+    **Heading structure caveat:** markdown headings (`#`) are produced only
+    when the source file carries real heading formatting — e.g. Word
+    "Heading 1/2/3" paragraph styles. PDFs (which have no heading
+    semantics) and documents that fake headings with bold text convert to
+    flat markdown without `#`. Since Prism chunks by headers, a flat result
+    yields a single coarse section. If you are unsure about the source's
+    structure, use the upcoming ``/convert/structured`` endpoint (LLM-
+    assisted heading inference) — not yet implemented.
+
+    The returned markdown is meant to be reviewed (and structured if
+    needed) before being sent to ``/ingest/markdown``. Independent of the
+    engine, so it works even when Qdrant is down. Requires the ``convert``
+    extra (markitdown).
+    """
+    try:
+        from markitdown import MarkItDown
+    except ImportError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "conversion_unavailable",
+                "detail": "install the conversion extra: pip install 'prism-rag[convert]'",
+            },
+        )
+
+    data = await file.read()
+    suffix = Path(file.filename).suffix if file.filename else None
+    try:
+        result = MarkItDown().convert_stream(BytesIO(data), file_extension=suffix)
+    except Exception as e:
+        log.warning("convert: failed for %r: %s: %s", file.filename, type(e).__name__, e)
+        return JSONResponse(
+            status_code=422,
+            content={"error": "conversion_failed", "detail": "could not convert the file"},
+        )
+    return ConvertResponse(markdown=result.markdown, title=result.title)
 
 
 @router.post("/search", response_model=SearchResponse)

@@ -12,11 +12,9 @@ class ChatMessage(BaseModel):
     content: str
 
 
-class IngestRequest(BaseModel):
-    markdown: str = Field(description="Markdown document to ingest.")
-    summarize: bool = Field(
-        default=True, description="Refresh the corpus summary after ingest."
-    )
+class ConvertResponse(BaseModel):
+    markdown: str = Field(description="The converted document as markdown.")
+    title: str | None = Field(default=None, description="Document title, if detected.")
 
 
 class IngestedNode(BaseModel):

@@ -343,7 +343,8 @@ python -m prism.api
 
 | Endpoint | Body | Returns |
 |---|---|---|
-| `POST /ingest` | `{"markdown": "...", "summarize": true}` | indexed nodes, detected language, corpus summary |
+| `POST /ingest/markdown` | raw markdown in the request body (`text/markdown`) | indexed nodes, detected language, corpus summary |
+| `POST /convert/file` | multipart `file` (PDF, DOCX, HTML, ...) | `{"markdown", "title"}` — convert only (then send to `/ingest/markdown`); needs the `convert` extra |
 | `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + retrieved paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness: `200 {"status": "ok"}` while the process is up |
@@ -351,6 +352,11 @@ python -m prism.api
 
 Wire `/health` to a liveness probe (shallow — never restart on a Qdrant blip) and `/ready`
 to a readiness probe (pulls the instance out of rotation while Qdrant is unreachable).
+
+`/convert/file` turns PDF/DOCX/PPTX/XLSX/HTML/... into markdown (via markitdown) — but it
+only emits `#` headings when the source carries real heading styles; PDFs and bold-faked
+headings convert to flat text. Review (and structure) the result before sending it to
+`/ingest/markdown`.
 
 Follow-up questions work over HTTP too — the service is stateless (like the OpenAI API),
 so the client passes the prior turns in `history` with each request:

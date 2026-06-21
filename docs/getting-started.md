@@ -40,6 +40,9 @@ pip install -e ".[sonar]"
 
 # with the HTTP API as well
 pip install -e ".[api,sonar]"
+
+# add file conversion (/convert/file via markitdown — PDF, DOCX, ...)
+pip install -e ".[api,sonar,convert]"
 ```
 
 Copy the example env and add your key:
@@ -147,10 +150,19 @@ Open the interactive docs at <http://localhost:8000/docs>.
 curl -s localhost:8000/health     # {"status":"ok"}
 curl -s localhost:8000/ready      # {"status":"ready","nodes":N}  (503 if Qdrant is down)
 
-# ingest a markdown document
-curl -s localhost:8000/ingest -H 'content-type: application/json' -d '{
-  "markdown": "# Hotel\n\n## Pets\n\nPets up to 5 kg are allowed."
-}'
+# ingest a markdown document — the body is raw markdown, no JSON wrapper
+curl -s localhost:8000/ingest/markdown -H 'content-type: text/markdown' \
+  --data-binary $'# Hotel\n\n## Pets\n\nPets up to 5 kg are allowed.'
+
+# convert a non-markdown file to markdown — conversion only
+# supported: PDF, DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, EPUB, ZIP, text
+# NOTE: `#` headings appear only if the source has real heading styles;
+#       PDFs and bold-faked headings convert to flat text — review before ingesting.
+curl -s localhost:8000/convert/file -F file=@handbook.pdf   # -> {"markdown": "...", "title": "..."}
+
+# typical flow: convert a file, then ingest the returned markdown
+md=$(curl -s localhost:8000/convert/file -F file=@handbook.pdf | jq -r .markdown)
+curl -s localhost:8000/ingest/markdown -H 'content-type: text/markdown' --data-binary "$md"
 
 # retrieve chunks
 curl -s localhost:8000/search -H 'content-type: application/json' -d '{
@@ -192,7 +204,8 @@ cases instead return `200` with a `note` explaining why the result is empty.
 
 | Endpoint | Body | Returns |
 |---|---|---|
-| `POST /ingest` | `{"markdown": "...", "summarize": true}` | indexed nodes, language, corpus summary |
+| `POST /ingest/markdown` | raw markdown in the body (`text/markdown`) | indexed nodes, language, corpus summary |
+| `POST /convert/file` | multipart `file` (PDF, DOCX, ...) | `{"markdown": "...", "title": "..."}` — convert only, then ingest |
 | `POST /search` | `{"query": "...", "filter_relevance": true, "query_language": null, "history": []}` | keypoints + paragraphs |
 | `POST /answer` | same as `/search` | grounded answer + underlying search result |
 | `GET /health` | — | liveness |

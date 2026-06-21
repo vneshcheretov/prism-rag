@@ -51,6 +51,12 @@ sonar = [
 api = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+# Document conversion for /convert/file (PDF, DOCX, PPTX, XLSX, HTML, ...).
+# Heavy and optional — the endpoint reports 503 with an install hint when absent.
+convert = [
+    "markitdown[all]>=0.1",
 ]
 dev = [
     "pytest>=8.0",
