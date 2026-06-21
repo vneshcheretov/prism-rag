@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        # No 'sonar' extra: torch/fairseq2 aren't needed — unit tests use fake
+        # embedders, and SONAR imports are lazy. Integration tests (which need
+        # the real model) are excluded by the default pytest marker filter.
+        run: pip install -e ".[api,convert,dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Type check (mypy, non-blocking)
+        # Strict mode has a known baseline of warnings, mostly from untyped
+        # third-party libs (OpenAI/Qdrant/langdetect). Surfaced, not gated.
+        continue-on-error: true
+        run: mypy src
+
+      - name: Tests
+        run: pytest -q

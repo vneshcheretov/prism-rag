@@ -2,6 +2,10 @@
 
 **Hybrid RAG engine that decomposes queries into keypoints and retrieves across dense vectors, lexical stems, and a knowledge graph — in any of 200 languages.**
 
+[![CI](https://github.com/vneshcheretov/prism-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/vneshcheretov/prism-rag/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 ---
 
 Classic RAG embeds your question as a single vector and hopes for the best. **Prism** takes the question apart first.
