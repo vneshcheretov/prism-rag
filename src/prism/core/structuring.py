@@ -30,6 +30,7 @@ _OVERLAP = 5
 
 _NUMBERED_RE = re.compile(r"(\d+\))(.+?)(?=\d+\)|$)", re.DOTALL)
 _MARKDOWN_FENCE_RE = re.compile(r"```markdown\s*(.*?)\s*```", re.DOTALL)
+_ANY_FENCE_RE = re.compile(r"```\s*(.*?)\s*```", re.DOTALL)
 _DEEP_HEADER_RE = re.compile(r"^#{5,}", re.MULTILINE)
 
 
@@ -62,8 +63,15 @@ class MarkdownStructurer:
 
     @staticmethod
     def _extract_markdown(text: str) -> str:
-        match = _MARKDOWN_FENCE_RE.search(text)
-        return match.group(1) if match else ""
+        """Pull the headings out of the model reply, tolerating fence drift.
+
+        Prefer a ```markdown fence, fall back to any ``` fence, and finally
+        accept the raw reply — downstream parsing only keeps ``N)`` lines, so
+        stray prose is ignored either way. (Strictly requiring the labeled
+        fence silently dropped every heading when a model omitted it.)
+        """
+        match = _MARKDOWN_FENCE_RE.search(text) or _ANY_FENCE_RE.search(text)
+        return match.group(1) if match else text.strip()
 
     @staticmethod
     def _dedupe(items: list[str]) -> list[str]:
@@ -122,10 +130,13 @@ class MarkdownStructurer:
             sentence = sentences.get(num)
             if not sentence:
                 continue
+            # Header on its own line — otherwise it glues to the following
+            # sentence and the markdown chunker won't parse it as a heading.
+            header_line = self._remove_deep_headers(header).strip()
             if normalize_simple(sentence) == normalize_simple(header):
-                sentences[num] = "\n" + self._remove_deep_headers(header)
+                sentences[num] = f"\n{header_line}\n"
             else:
-                sentences[num] = "\n" + self._remove_deep_headers(header) + sentences[num]
+                sentences[num] = f"\n{header_line}\n{sentence}"
         return " ".join(sentences.values())
 
     async def structure(self, data: str) -> str:

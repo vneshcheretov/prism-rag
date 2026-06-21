@@ -32,6 +32,23 @@ async def test_structure_splices_headings_into_text():
     assert llm.calls == 1
 
 
+async def test_structure_tolerates_missing_markdown_fence():
+    # a model that returns headings without the ```markdown fence must still work
+    llm = HeadingLLM("1) # Hotel\n2) ## Pets")
+    data = "Aiso hotel overview text. Pets up to five kg are allowed."
+    result = await MarkdownStructurer(llm).structure(data)
+    assert "# Hotel" in result
+    assert "## Pets" in result
+
+
+async def test_structure_puts_heading_on_its_own_line():
+    # heading must not glue to the following sentence (chunker parses by line)
+    llm = HeadingLLM("```markdown\n2) ## Pets\n```")
+    data = "Aiso hotel overview text. Pets up to five kg are allowed."
+    result = await MarkdownStructurer(llm).structure(data)
+    assert "## Pets\nPets up to five kg" in result
+
+
 async def test_structure_empty_input_returns_as_is():
     llm = HeadingLLM("```markdown\n```")
     assert await MarkdownStructurer(llm).structure("") == ""
