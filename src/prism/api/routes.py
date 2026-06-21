@@ -170,7 +170,12 @@ async def convert_structured(
     if isinstance(out, JSONResponse):
         return out
     markdown, title = out
-    structured = await MarkdownStructurer(prism.llm).structure(markdown)
+    structurer = MarkdownStructurer(prism.llm)
+    structured = await structurer.structure(markdown)
+    # markitdown rarely detects a title for unstructured sources (e.g. PDFs);
+    # infer one from the opening of the document in that case.
+    if not title:
+        title = await structurer.generate_title(markdown)
     return ConvertResponse(markdown=structured, title=title)
 
 

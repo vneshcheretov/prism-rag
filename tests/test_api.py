@@ -10,6 +10,7 @@ from prism import Embedder, MarkdownChunker, Prism, PrismGraph, QdrantBackend
 from prism.api import create_app
 from prism.schemas.llm_outputs import (
     CorpusSummary,
+    DocumentTitle,
     NodeExtraction,
     QueryKeypoints,
     RelevanceFilter,
@@ -70,6 +71,8 @@ class FakeLLM:
             )
         if schema is CorpusSummary:
             return CorpusSummary(summary="A hotel handbook covering pet policy.")
+        if schema is DocumentTitle:
+            return DocumentTitle(title="Inferred Title")
         if schema is Summarization:
             return Summarization(
                 summary="Yes, pets up to 5 kg are allowed.",
@@ -185,7 +188,10 @@ async def test_convert_structured_adds_headings():
             "/convert/structured", files={"file": ("doc.html", html, "text/html")}
         )
     assert resp.status_code == 200
-    assert "# Structured" in resp.json()["markdown"]
+    body = resp.json()
+    assert "# Structured" in body["markdown"]
+    # no <title> in the source -> title is inferred from the first chunk
+    assert body["title"] == "Inferred Title"
 
 
 async def test_convert_file_failure_returns_422(monkeypatch):

@@ -371,3 +371,10 @@ Example:
 26) ### Laundry
 30) ### Transfer
 ```"""
+
+
+MD_TITLE_PROMPT = """\
+You will receive the opening fragment of a document.
+Return a concise, descriptive title for the whole document — a few words,
+in the document's own language. Plain text only: no markdown, no quotes,
+no "Title:" prefix."""

@@ -123,6 +123,17 @@ class CorpusSummary(BaseModel):
     )
 
 
+class DocumentTitle(BaseModel):
+    """A short title inferred from the opening of a document."""
+
+    title: str = Field(
+        description=(
+            "Concise descriptive title for the document (a few words), in the "
+            "document's language. Plain text — no markdown, no surrounding quotes."
+        )
+    )
+
+
 class LLMStems(BaseModel):
     """Per-word stems produced by the LLM fallback stemmer.
 

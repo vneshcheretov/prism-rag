@@ -13,7 +13,12 @@ import logging
 import re
 
 from ..llm.base import LLMProvider, Tier
-from ..llm.prompts import MD_HEADERS_CONTINUE_PROMPT, MD_HEADERS_START_PROMPT
+from ..llm.prompts import (
+    MD_HEADERS_CONTINUE_PROMPT,
+    MD_HEADERS_START_PROMPT,
+    MD_TITLE_PROMPT,
+)
+from ..schemas.llm_outputs import DocumentTitle
 from ..utils.text import normalize_simple, sentence_tokenize
 
 log = logging.getLogger(__name__)
@@ -135,3 +140,21 @@ class MarkdownStructurer:
         headers_dict = self._parse_numbered(all_headers)
         sentences_dict = self._parse_numbered(all_sentences)
         return self._merge(headers_dict, sentences_dict)
+
+    async def generate_title(self, data: str) -> str | None:
+        """Infer a short title from the opening of the document.
+
+        Uses only the first chunk of sentences (titles live at the top) and
+        a single ``fast`` structured call. Returns ``None`` for empty input.
+        """
+        sentences = sentence_tokenize(data)
+        if not sentences:
+            return None
+        first_chunk = " ".join(sentences[:_BLOCK_SIZE])
+        result = await self.llm.complete_structured(
+            system=MD_TITLE_PROMPT,
+            user=first_chunk,
+            schema=DocumentTitle,
+            tier="fast",
+        )
+        return result.title.strip() or None
